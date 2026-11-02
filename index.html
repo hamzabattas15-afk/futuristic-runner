@@ -149,10 +149,10 @@ const CONFIG = {
   buildingMaxH: 60,         // keep the skyline below the screen top
   buildingMaxW: 14,
   buildingGapChance: 0.25,  // chance a slot is skipped -> sky/sun visible between buildings
-  bodyColorLo: 0x14102e,    // dark blue/purple body range (varied per building)
-  bodyColorHi: 0x241b52,
-  bodyEmissiveColor: 0x120a2e, // dark purple tint (NOT white: white flattens to gray)
-  bodyEmissiveIntensity: 0.4,
+  bodyColorLo: 0x1a1540,    // blue/purple body range (varied per building)
+  bodyColorHi: 0x30266a,
+  bodyEmissiveColor: 0x1a1240, // purple self-glow so bodies read on dark ground
+  bodyEmissiveIntensity: 0.55,
   windowGridCols: 6,        // lit window squares per wall (cols x rows budget)
   windowGridRows: 10,
   windowLitChance: 0.8,     // which windows are lit
@@ -176,14 +176,21 @@ const CONFIG = {
   stripePulseSpeed: 6,      // rad/s lane-marker brightness pulse
 
   // --- car (Step 4 visual model; overall size unchanged, hitbox untouched) ---
-  carBodyColor: 0x9fb8d8,   // pearl blue/silver metallic
+  carBodyColor: 0xb8c8e8,   // bright pearl silver/blue metallic
   carBodyEmissive: 0x1a2a4a, // subtle emissive tint so the body reads in shadow
-  carBodyEmissiveIntensity: 0.35,
+  carBodyEmissiveIntensity: 0.6,
+  carBodyMetalness: 0.5,
+  carBodyRoughness: 0.35,
+  carBodyEnvMapIntensity: 1.5,
   carAccentColor: 0x1de0ff, // cyan accent line + glow
   carTailColor: 0xff2244,   // taillight bar
   carTailEmissiveIntensity: 2.0,
   carRimLightColor: 0x35c0ff, // rim light from behind/above the car
-  carRimLightIntensity: 2.5,
+  carRimLightIntensity: 4,
+  carRimLightDistance: 14,
+  carRimLeftColor: 0x1de0ff,  // second rim light from the left side
+  carRimLeftIntensity: 2.5,
+  carOutlineColor: 0x1de0ff,  // glowing back-face outline shell around the hull
   carUnderGlowOpacity: 0.55,
   carThrusterX: 0.45,       // thruster x-offset (trail emitters align to these)
   carThrusterZ: 1.9,
@@ -196,10 +203,12 @@ const CONFIG = {
   showcaseCamLerp: 2.5,       // how fast the camera eases into showcase position
 
   // --- ground grid (side ground) ---
-  groundColor: 0x0d0a1e,    // deep purple/black
+  groundColor: 0x140f2e,    // deep purple
   gridSize: 8,              // cell size of the neon grid
   gridLineColor: 0x18e0ff,  // cyan lines
-  gridLineOpacity: 0.35,
+  gridLineOpacity: 0.6,
+  gridCrossColor: 0xff4dd2, // magenta cross lines
+  gridCrossOpacity: 0.3,
   gridFog: true,            // lines fade into horizon fog
 
   // --- obstacle / coin glow ---
@@ -433,7 +442,11 @@ function buildRoad() {
    world (children of worldGroup). Fades into the horizon via fog.
    ================================================================ */
 function buildGround() {
-  const mat = new THREE.MeshStandardMaterial({ color: CONFIG.groundColor, roughness: 1 });
+  // polygonOffset pushes the plane back so the grid lines never z-fight with it
+  const mat = new THREE.MeshStandardMaterial({
+    color: CONFIG.groundColor, roughness: 1,
+    polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
+  });
   const width = 240; // extends well past the far building layer
   const geo = new THREE.PlaneGeometry(width, CONFIG.roadLength);
 
@@ -445,7 +458,8 @@ function buildGround() {
   const lineGeo = new THREE.BufferGeometry();
   lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
   const lineMat = new THREE.LineBasicMaterial({
-    color: CONFIG.gridLineColor, transparent: true, opacity: CONFIG.gridLineOpacity
+    color: CONFIG.gridLineColor, transparent: true, opacity: CONFIG.gridLineOpacity,
+    depthWrite: false, fog: CONFIG.gridFog
   });
 
   for (let i = 0; i < CONFIG.segmentCount; i++) {
@@ -456,16 +470,19 @@ function buildGround() {
     grp.add(plane);
 
     if (QUALITY !== 'low') {
-      // two line layers: cyan main grid + sparser magenta cross-lines for depth
+      // two line layers: cyan main grid + magenta cross-lines for depth.
+      // Lines sit above the plane (y > -0.05), no depthWrite, fog fades them
+      // into the horizon so the grid melts into the sky color at distance.
       const lines = new THREE.LineSegments(lineGeo, lineMat);
-      lines.position.y = -0.02;
+      lines.position.y = -0.03;
       grp.add(lines);
       const magGeo = lineGeo.clone();
       magGeo.rotateY(Math.PI / 4);
       const mag = new THREE.LineSegments(magGeo, new THREE.LineBasicMaterial({
-        color: 0xff4dd2, transparent: true, opacity: CONFIG.gridLineOpacity * 0.4
+        color: CONFIG.gridCrossColor, transparent: true, opacity: CONFIG.gridCrossOpacity,
+        depthWrite: false, fog: CONFIG.gridFog
       }));
-      mag.position.y = -0.02;
+      mag.position.y = -0.03;
       mag.scale.set(1.4, 1, 1.4);
       grp.add(mag);
     }
@@ -473,6 +490,16 @@ function buildGround() {
     grp.position.z = -i * CONFIG.roadLength;
     worldGroup.add(grp);
     groundSegments.push(grp); // own pool: recycle math must use its own length
+  }
+}
+
+/* Build-time sanity check: if a city layer ends up with no visible buildings
+   (gap logic, instance writes, etc.), say so loudly instead of failing silently. */
+function assertCityLayer(layer, name) {
+  const visible = layer.userData.data.filter(b => !b.gap).length;
+  if (visible === 0) {
+    console.error('[city] layer "' + name + '" has 0 visible buildings ' +
+      '(of ' + layer.userData.data.length + ') — check gap/parking logic');
   }
 }
 
@@ -580,6 +607,8 @@ function buildCity() {
     xRange: CONFIG.parallaxX, minH: 20, maxH: CONFIG.buildingMaxH,
     w: CONFIG.buildingMaxW, d: 10, silhouette: true
   });
+  assertCityLayer(cityNear, 'near');
+  assertCityLayer(cityFar, 'far');
 }
 
 /* Pre-generate one building's window layout: a fixed grid of lit/unlit
@@ -704,8 +733,9 @@ function writeBuildingInstances(bodies, windows, edges, caps, i, b) {
   }
   if (!windows || !edges) return;
 
-  // Window grid on the road-facing wall, offset from the surface (no z-fighting)
-  const wallX = b.x + b.side * (b.w / 2 + CONFIG.windowOffset);
+  // Window grid on the ROAD-FACING wall (toward x=0), offset from the
+  // surface so it is never hidden behind the building's own body.
+  const wallX = b.x - b.side * (b.w / 2 + CONFIG.windowOffset);
   const rows = CONFIG.windowGridRows, cols = CONFIG.windowGridCols;
   for (let s = 0; s < b.win.length; s++) {
     const idx = i * b.win.length + s;
@@ -733,12 +763,12 @@ function writeBuildingInstances(bodies, windows, edges, caps, i, b) {
     return;
   }
   setInstance(edges, eIdx,                       // top beam
-    b.x + b.side * (b.w / 2), b.h + 0.05, b.z,
+    b.x - b.side * (b.w / 2), b.h + 0.05, b.z,
     t, t, b.d + 0.1);
   for (const s2 of [0, 1]) {                      // vertical corners
     const sz = s2 === 0 ? 1 : -1;
     setInstance(edges, eIdx + 1 + s2,
-      b.x + b.side * (b.w / 2), b.h / 2, b.z + sz * (b.d / 2),
+      b.x - b.side * (b.w / 2), b.h / 2, b.z + sz * (b.d / 2),
       t, b.h, t);
   }
 }
@@ -894,6 +924,23 @@ function buildEnvMap() {
     }
     geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     envScene.add(new THREE.Mesh(geo, mat));
+    // Bright horizon band + a few bright sun-like patches so the metal has
+    // strong highlights to reflect (otherwise the body reads near-black).
+    const band = new THREE.Mesh(
+      new THREE.CylinderGeometry(9.9, 9.9, 1.4, 32, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0xffd9a0, side: THREE.BackSide })
+    );
+    envScene.add(band);
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + 0.5;
+      const patch = new THREE.Mesh(
+        new THREE.CircleGeometry(1.6, 16),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
+      );
+      patch.position.set(Math.sin(a) * 9.5, 2.5 + (i % 2) * 1.5, Math.cos(a) * 9.5);
+      patch.lookAt(0, 0, 0);
+      envScene.add(patch);
+    }
     const pmrem = new THREE.PMREMGenerator(renderer);
     _envMap = pmrem.fromScene(envScene, 0.04).texture;
     pmrem.dispose();
@@ -911,9 +958,10 @@ function createCar() {
 
   // --- materials ---
   const bodyMat = new THREE.MeshStandardMaterial({
-    color: CONFIG.carBodyColor, metalness: 0.9, roughness: 0.35,
+    color: CONFIG.carBodyColor, metalness: CONFIG.carBodyMetalness,
+    roughness: CONFIG.carBodyRoughness,
     emissive: CONFIG.carBodyEmissive, emissiveIntensity: CONFIG.carBodyEmissiveIntensity,
-    envMap, envMapIntensity: 1.2
+    envMap, envMapIntensity: CONFIG.carBodyEnvMapIntensity
   });
   const accentMat = new THREE.MeshStandardMaterial({
     color: CONFIG.carAccentColor, metalness: 0.6, roughness: 0.3,
@@ -938,6 +986,16 @@ function createCar() {
   const hull = new THREE.Mesh(hullGeo, bodyMat);
   hull.position.y = 0.05;
   g.add(hull);
+
+  // --- glowing cyan outline shell (back-face, slightly larger) so the car's
+  //     silhouette reads on any background, same trick as the obstacles ---
+  const outline = new THREE.Mesh(hullGeo, new THREE.MeshBasicMaterial({
+    color: CONFIG.carOutlineColor, side: THREE.BackSide,
+    toneMapped: false, fog: false, transparent: true, opacity: 0.85
+  }));
+  outline.position.y = 0.05;
+  outline.scale.set(1.07, 1.35, 1.045);
+  g.add(outline);
 
   // --- pointed nose cone (lathe) blending into the hull front ---
   const nosePts = [];
@@ -1044,11 +1102,17 @@ function createCar() {
   pl.position.set(0, -0.1, 0.5);
   g.add(pl);
 
-  // --- rim light: small cyan/blue light behind and above the car so its
-  // outline reads against the dark road (fixes black-silhouette-from-behind) ---
-  const rim = new THREE.PointLight(CONFIG.carRimLightColor, CONFIG.carRimLightIntensity, 10, 2);
+  // --- rim light: cyan light behind and above the car so its outline reads
+  //     against the dark road (fixes black-silhouette-from-behind) ---
+  const rim = new THREE.PointLight(CONFIG.carRimLightColor, CONFIG.carRimLightIntensity,
+    CONFIG.carRimLightDistance, 2);
   rim.position.set(0, 2.2, 3.5);
   g.add(rim);
+  // second rim from the left so both flanks catch a highlight
+  const rimLeft = new THREE.PointLight(CONFIG.carRimLeftColor, CONFIG.carRimLeftIntensity,
+    CONFIG.carRimLightDistance, 2);
+  rimLeft.position.set(-3.5, 1.2, 1.2);
+  g.add(rimLeft);
 
   return g;
 }
@@ -1124,9 +1188,12 @@ function buildPools() {
     particlePool.push(p);
   }
 
-  // Engine glow trail behind the car (pooled, scene space)
-  const tMat = new THREE.MeshBasicMaterial({ color: 0x1de0ff, transparent: true, opacity: 0.6 });
-  const tGeo = new THREE.SphereGeometry(0.22, 8, 6);
+  // Engine trail: small bright additive cyan puffs (thruster glow, not discs)
+  const tMat = new THREE.MeshBasicMaterial({
+    color: 0x5cf4ff, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, fog: false
+  });
+  const tGeo = new THREE.SphereGeometry(0.12, 8, 6);
   for (let i = 0; i < CONFIG.trailPoolSize; i++) {
     const t = new THREE.Mesh(tGeo, tMat.clone()); // clone so opacity fades individually
     t.visible = false;
@@ -1153,7 +1220,7 @@ function emitTrail(dt) {
       car.position.y - 0.05,
       car.position.z + CONFIG.carThrusterZ
     );
-    t.material.opacity = 0.6;
+    t.material.opacity = 0.9;
     t.scale.setScalar(1);
     t.visible = true;
   }
@@ -1165,8 +1232,8 @@ function updateTrail(dt) {
     t.userData.life -= dt;
     if (t.userData.life <= 0) { t.userData.active = false; t.visible = false; continue; }
     const k = t.userData.life / CONFIG.trailLife;
-    t.material.opacity = 0.6 * k;
-    t.scale.setScalar(0.5 + (1 - k) * 1.2); // grows as it fades
+    t.material.opacity = 0.9 * k;
+    t.scale.setScalar(0.5 + k * 0.5); // shrinks as it fades
     // drift slightly toward the camera (trail stays behind the car)
     t.position.z += state.speed * dt * 0.9;
   }
