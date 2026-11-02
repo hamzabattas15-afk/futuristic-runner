@@ -4,9 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
 <title>Futuristic Runner</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🚗</text></svg>" />
 <style>
   /* ============ HUD / UI overlay (HTML, not canvas) ============ */
   html, body { margin: 0; padding: 0; overflow: hidden; width: 100%; height: 100%; background: #0a0a1a; }
+  /* No scroll / pinch-zoom on the canvas; swipes stay game input */
+  canvas { touch-action: none; display: block; }
   #hud {
     position: fixed; top: 0; left: 0; right: 0; padding: 12px 18px;
     display: flex; justify-content: space-between; align-items: flex-start;
@@ -50,6 +53,59 @@
     border-radius: 8px; cursor: pointer; color: #a8c8e0;
     background: rgba(20,32,60,.85); border: 2px solid #2a4a6a;
   }
+  /* Mute button: fixed top-right corner, above the HUD, pointer-events on */
+  #muteBtn {
+    position: fixed; top: 10px; right: 12px; z-index: 10;
+    font-size: 20px; line-height: 1; padding: 7px 10px;
+    border-radius: 8px; cursor: pointer; user-select: none;
+    color: #e0f6ff; background: rgba(20,32,60,.7); border: 1px solid #2a4a6a;
+    pointer-events: auto;
+  }
+  #muteBtn.muted { color: #6a8aa0; border-color: #1a2a40; }
+  /* Pause button (Step 6): fixed under the mute button, visible only while PLAYING */
+  #pauseBtn {
+    position: fixed; top: 56px; right: 12px; z-index: 10;
+    font-size: 18px; line-height: 1; padding: 8px 12px;
+    border-radius: 8px; cursor: pointer; user-select: none; -webkit-user-select: none;
+    color: #e0f6ff; background: rgba(20,32,60,.7); border: 1px solid #2a4a6a;
+    pointer-events: auto;
+  }
+  #pauseBtn.hidden, #pauseOverlay.hidden, #countdown.hidden { display: none; }
+  /* Pause menu overlay: same style family as #overlay */
+  #pauseOverlay {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    justify-content: center; align-items: center;
+    background: rgba(6, 10, 26, 0.45); color: #e0f6ff;
+    font-family: 'Segoe UI', Arial, sans-serif; text-align: center;
+    z-index: 5;
+  }
+  #pausePanel {
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+    padding: 28px 44px; border-radius: 16px;
+    background: linear-gradient(180deg, rgba(8,12,30,0.10) 0%, rgba(8,12,30,0.55) 60%, rgba(8,12,30,0.72) 100%);
+  }
+  #pauseOverlay h1 { font-size: 42px; margin: 0; letter-spacing: 4px; color: #35e0ff; text-shadow: 0 0 18px rgba(53,224,255,.9); }
+  #pauseStats { font-size: 18px; margin: 4px 0; color: #ffd34d; }
+  #pauseHint { font-size: 14px; color: #6a8aa0; margin: 0; }
+  .pauseRow { display: flex; gap: 14px; margin: 8px 0; }
+  .pBtn {
+    font-family: inherit; font-size: 18px; font-weight: 700; letter-spacing: 2px;
+    padding: 14px 22px; min-width: 110px; border-radius: 10px; cursor: pointer;
+    user-select: none; -webkit-user-select: none;
+    color: #a8c8e0; background: rgba(20,32,60,.85); border: 2px solid #2a4a6a;
+    transition: all .15s;
+  }
+  .pBtn:hover { border-color: #35e0ff; color: #e0f6ff; }
+  #resumeBtn { color: #0a1030; background: #35e0ff; border-color: #35e0ff; box-shadow: 0 0 18px rgba(53,224,255,.8); }
+  /* 3-2-1 resume countdown: huge number, never catches input */
+  #countdown {
+    position: fixed; inset: 0; z-index: 6;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Segoe UI', Arial, sans-serif; font-size: 120px; font-weight: 800;
+    color: #35e0ff; text-shadow: 0 0 40px rgba(53,224,255,.9);
+    pointer-events: none; user-select: none; -webkit-user-select: none;
+  }
+
 </style>
 </head>
 <body>
@@ -60,6 +116,23 @@
     <div class="hud-item" id="hudSpeed">0 km/h</div>
     <div class="hud-item"><span id="hudDist">0</span> m</div>
   </div>
+  <button id="muteBtn" title="Mute (M)">🔊</button>
+  <button id="pauseBtn" class="hidden" title="Pause (P / Esc)">❚❚</button>
+
+  <!-- Pause menu overlay (Step 6) -->
+  <div id="pauseOverlay" class="hidden">
+    <div id="pausePanel">
+      <h1>PAUSED</h1>
+      <p id="pauseStats"></p>
+      <div class="pauseRow">
+        <button class="pBtn" id="resumeBtn">RESUME</button>
+        <button class="pBtn" id="pRestartBtn">RESTART</button>
+        <button class="pBtn" id="pMenuBtn">MENU</button>
+      </div>
+      <p id="pauseHint">Enter / Space: resume · R: restart · Esc: resume</p>
+    </div>
+  </div>
+  <div id="countdown" class="hidden"></div>
 
   <!-- Menu / Game Over overlay -->
   <div id="overlay">
@@ -79,7 +152,7 @@
       <div id="newBest" style="display:none; font-size:20px; font-weight:bold; color:#35ff9e; text-shadow:0 0 10px #35ff9e;">★ NEW BEST! ★</div>
       <p id="startLine">Press <b>Space</b> / <b>Enter</b> or tap to start</p>
       <button id="menuBtn" style="display:none;">MENU</button>
-      <p id="hint">1/2/3 or ←/→ to pick difficulty · Esc for menu</p>
+      <p id="hint">1/2/3 or ←/→ to pick difficulty · P / Esc: pause</p>
     </div>
   </div>
 
@@ -192,8 +265,13 @@ const CONFIG = {
   carRimLeftIntensity: 2.5,
   carOutlineColor: 0x1de0ff,  // glowing back-face outline shell around the hull
   carUnderGlowOpacity: 0.55,
-  carThrusterX: 0.45,       // thruster x-offset (trail emitters align to these)
+  carThrusterX: 0.28,       // trail emitter x-offset (between the rear hover discs)
   carThrusterZ: 1.9,
+  carWheelX: 0.58,          // hover-disc x-offset (inside the wheel arches)
+  carWheelFrontZ: -1.25,    // hover-disc positions (front / rear)
+  carWheelRearZ: 1.35,
+  carWheelRadius: 0.34,     // hover-disc ring size
+  carHeadlightColor: 0xeafcff,
 
   // --- menu showcase camera ---
   showcaseSpin: 0.45,         // rad/s car rotation on the menu screen
@@ -224,7 +302,54 @@ const CONFIG = {
   // --- misc ---
   pixelRatioCap: 2,
   coinSpin: 4,              // rad/s coin rotation
-  poolSize: { obstacles: 30, coins: 60, particles: 40 }
+  poolSize: { obstacles: 30, coins: 60, particles: 40 },
+
+  // --- pause (Step 6) ---
+  resumeCountdownStep: 0.8, // seconds each 3-2-1 number stays on screen
+
+  // --- audio (Step 5, all Web Audio - no external files) ---
+  masterVolume: 0.5,        // overall loudness (0..1)
+  mutedKey: 'runner_muted', // localStorage key for the mute state
+  audio: {
+    engine: {
+      // smooth electric motor whine: two sine oscillators (fundamental + soft
+      // 2x harmonic) through a gentle lowpass. No AM/tremolo/LFO anywhere.
+      basePitch: 120,        // Hz at base speed
+      pitchRange: 360,       // extra Hz added at max speed (=> ~480 Hz)
+      harmonicVolume: 0.35,  // 2x-harmonic oscillator level vs fundamental
+      baseVolume: 0.05,      // kept low so coins/crash stand out
+      volumeRange: 0.06,     // extra gain added at max speed
+      filterBase: 600,       // lowpass cutoff at base speed (Hz)
+      filterRange: 2400,     // extra cutoff at max speed
+      fadeTime: 0.3,         // fade in/out seconds on state changes
+      wind: {                // speed-dependent air noise (no rhythm)
+        highpass: 300,       // Hz
+        bandpass: 1200,      // Hz center
+        bandQ: 0.6,
+        baseVolume: 0.01,    // near-silent at low speed
+        volumeRange: 0.09    // rises smoothly with speed
+      }
+    },
+    coin: {
+      baseFreq: 880,         // first coin in a combo
+      comboStep: 60,         // Hz added per quick successive coin
+      comboWindow: 1.0,      // seconds that still count as a combo
+      maxCombo: 12,          // pitch cap
+      dur: 0.12,
+      volume: 0.25
+    },
+    whoosh: { dur: 0.16, volume: 0.15, filterFrom: 400, filterTo: 2400 },
+    crash: { noiseDur: 0.35, thudFreq: 70, thudDur: 0.4, volume: 0.6 },
+    click: { freq: 520, dur: 0.06, volume: 0.2 },
+    start: { freqFrom: 300, freqTo: 720, dur: 0.22, volume: 0.25 },
+    ambient: {
+      enabled: true,         // toggleable quiet synth pad
+      volume: 0.05,          // kept low so it never gets annoying
+      chord: [110, 164.81, 220, 277.18], // A2 E3 A3 C#4 - soft major-ish pad
+      lfoRate: 0.08,         // slow filter sweep (Hz)
+      lfoDepth: 220
+    }
+  }
 };
 
 /* ================================================================
@@ -280,6 +405,315 @@ function applyDifficulty(diff) {
 }
 
 /* ================================================================
+   AudioManager — everything synthesized with the Web Audio API so the
+   game stays a single index.html (no external files).
+   The AudioContext is created/resumed lazily on the first user input
+   (keydown / pointerdown) to respect browser autoplay rules.
+   Long-lived nodes (engine hum, ambient pad) are created once and
+   reused; short-lived nodes are only created on events.
+   ================================================================ */
+const AudioManager = {
+  ctx: null,
+  master: null,          // master GainNode
+  muted: storageGet(CONFIG.mutedKey) === '1',
+  started: false,        // user input seen -> ctx allowed to run
+  hiddenPaused: false,   // tab hidden -> suspend
+
+  // engine whine + wind (persistent nodes)
+  engOsc: null, engOsc2: null, engFilter: null, engGain: null,
+  engOsc2Gain: null,
+  windSrc: null, windHP: null, windBP: null, windGain: null,
+  // ambient pad (persistent nodes)
+  ambGain: null,
+
+  /* Create the context if needed and resume it. Called from the global
+     keydown/pointerdown listeners only. Safe to call repeatedly. */
+  ensureContext() {
+    if (!this.started) return false;
+    if (!this.ctx) {
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return false;
+        this.ctx = new AC();
+      } catch { return false; }
+      this.master = this.ctx.createGain();
+      this.master.gain.value = this.muted ? 0 : CONFIG.masterVolume;
+      this.master.connect(this.ctx.destination);
+      this.buildEngine();
+      this.buildAmbient();
+    }
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+    return true;
+  },
+
+  /* --- persistent nodes: smooth electric motor whine (sine fundamental +
+         soft 2x harmonic through a gentle lowpass) and speed wind noise.
+         Deliberately NO amplitude modulation / LFO / tremolo anywhere:
+         any pulsing reads as rotor blades. --- */
+  buildEngine() {
+    const A = CONFIG.audio.engine;
+    // motor whine
+    this.engOsc = this.ctx.createOscillator();
+    this.engOsc.type = 'sine';
+    this.engOsc.frequency.value = A.basePitch;
+    this.engOsc2 = this.ctx.createOscillator();
+    this.engOsc2.type = 'triangle';      // soft harmonic timbre
+    this.engOsc2.frequency.value = A.basePitch * 2;
+    this.engOsc2Gain = this.ctx.createGain();
+    this.engOsc2Gain.gain.value = A.harmonicVolume;
+    this.engFilter = this.ctx.createBiquadFilter();
+    this.engFilter.type = 'lowpass';
+    this.engFilter.frequency.value = A.filterBase;
+    this.engFilter.Q.value = 0.4;        // gentle, no resonance ringing
+    this.engGain = this.ctx.createGain();
+    this.engGain.gain.value = 0; // silent until PLAYING
+    this.engOsc.connect(this.engFilter);
+    this.engOsc2.connect(this.engOsc2Gain);
+    this.engOsc2Gain.connect(this.engFilter);
+    this.engFilter.connect(this.engGain);
+    this.engGain.connect(this.master);
+    this.engOsc.start();
+    this.engOsc2.start();
+    // wind / air noise: looping white noise, highpass + bandpass, level
+    // rises smoothly with speed. Constant noise, no envelope rhythm.
+    const W = A.wind;
+    this.windSrc = this.ctx.createBufferSource();
+    this.windSrc.buffer = this.getNoise();
+    this.windSrc.loop = true;
+    this.windHP = this.ctx.createBiquadFilter();
+    this.windHP.type = 'highpass';
+    this.windHP.frequency.value = W.highpass;
+    this.windBP = this.ctx.createBiquadFilter();
+    this.windBP.type = 'bandpass';
+    this.windBP.frequency.value = W.bandpass;
+    this.windBP.Q.value = W.bandQ;
+    this.windGain = this.ctx.createGain();
+    this.windGain.gain.value = 0; // silent until PLAYING
+    this.windSrc.connect(this.windHP);
+    this.windHP.connect(this.windBP);
+    this.windBP.connect(this.windGain);
+    this.windGain.connect(this.master);
+    this.windSrc.start();
+  },
+
+  /* --- persistent nodes: quiet ambient synth pad (toggleable) --- */
+  buildAmbient() {
+    const A = CONFIG.audio.ambient;
+    if (!A.enabled) return;
+    this.ambGain = this.ctx.createGain();
+    this.ambGain.gain.value = 0; // silent until MENU
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 800;
+    filter.Q.value = 0.5;
+    filter.connect(this.ambGain);
+    this.ambGain.connect(this.master);
+    // slow LFO sweeping the filter for movement (created once)
+    const lfo = this.ctx.createOscillator();
+    lfo.frequency.value = A.lfoRate;
+    const lfoGain = this.ctx.createGain();
+    lfoGain.gain.value = A.lfoDepth;
+    lfo.connect(lfoGain);
+    lfoGain.connect(filter.frequency);
+    lfo.start();
+    for (const f of A.chord) {
+      const o = this.ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.value = f;
+      const g = this.ctx.createGain();
+      g.gain.value = 1 / A.chord.length; // chord members share headroom
+      o.connect(g);
+      g.connect(filter);
+      o.start();
+    }
+  },
+
+  /* Called every frame while PLAYING: map speed to pitch/volume/filter.
+     Only param values are written — no nodes created, no allocations.
+     Everything glides via setTargetAtTime: no stepped pitch, no pulsing. */
+  engineUpdate(speedT) {
+    if (!this.ctx || !this.engGain) return;
+    const A = CONFIG.audio.engine;
+    const now = this.ctx.currentTime;
+    const freq = A.basePitch + A.pitchRange * speedT;
+    this.engOsc.frequency.setTargetAtTime(freq, now, 0.1);
+    this.engOsc2.frequency.setTargetAtTime(freq * 2, now, 0.1);
+    this.engFilter.frequency.setTargetAtTime(A.filterBase + A.filterRange * speedT, now, 0.1);
+    // volume rides the speed, gated by run state (0 when not PLAYING)
+    this.engGain.gain.setTargetAtTime(
+      (A.baseVolume + A.volumeRange * speedT) * this.runActive(), now, A.fadeTime);
+    // wind rises smoothly with speed, same gate
+    const W = A.wind;
+    if (this.windGain) {
+      this.windGain.gain.setTargetAtTime(
+        (W.baseVolume + W.volumeRange * speedT) * this.runActive(), now, A.fadeTime);
+    }
+  },
+
+  runActive() { return state.mode === 'PLAYING' ? 1 : 0; },
+
+  /* Fade the engine + wind in/out on state changes (MENU / PLAYING / GAME_OVER) */
+  engineState() {
+    if (!this.ctx || !this.engGain) return;
+    const A = CONFIG.audio.engine;
+    const target = this.runActive() * A.baseVolume;
+    this.engGain.gain.setTargetAtTime(target, this.ctx.currentTime, A.fadeTime);
+    if (this.windGain) {
+      this.windGain.gain.setTargetAtTime(this.runActive() * A.wind.baseVolume,
+        this.ctx.currentTime, A.fadeTime);
+    }
+    if (this.ambGain) {
+      const ambTarget = (state.mode === 'MENU' && CONFIG.audio.ambient.enabled)
+        ? CONFIG.audio.ambient.volume : 0;
+      this.ambGain.gain.setTargetAtTime(ambTarget, this.ctx.currentTime, 0.8);
+    }
+  },
+
+  /* --- one-shot helpers (short-lived nodes, created on events only) --- */
+  blip(freq, dur, volume, type = 'sine', freqTo = null) {
+    if (!this.ensureStarted()) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if (freqTo !== null) o.frequency.exponentialRampToValueAtTime(freqTo, t + dur);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(volume, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g);
+    g.connect(this.master);
+    o.start(t);
+    o.stop(t + dur + 0.02);
+  },
+
+  /* Filtered noise burst; reuses one shared noise buffer. */
+  noiseBuffer: null,
+  getNoise() {
+    if (!this.noiseBuffer) {
+      const len = this.ctx.sampleRate * 0.5;
+      this.noiseBuffer = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const d = this.noiseBuffer.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    }
+    return this.noiseBuffer;
+  },
+  noise(dur, volume, filterFrom, filterTo) {
+    if (!this.ensureStarted()) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.getNoise();
+    src.loop = true;
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.Q.value = 1;
+    f.frequency.setValueAtTime(filterFrom, t);
+    f.frequency.exponentialRampToValueAtTime(filterTo, t + dur);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(volume, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(f);
+    f.connect(g);
+    g.connect(this.master);
+    src.start(t);
+    src.stop(t + dur + 0.02);
+  },
+
+  ensureStarted() { return this.started && this.ensureContext(); },
+
+  /* --- game sounds --- */
+  coinComboTime: -99, // last coin time (perf-style ms) for the combo feel
+  coinComboN: 0,
+  coin() {
+    const A = CONFIG.audio.coin;
+    const now = performance.now() / 1000;
+    if (now - this.coinComboTime < A.comboWindow) this.coinComboN = Math.min(this.coinComboN + 1, A.maxCombo);
+    else this.coinComboN = 0;
+    this.coinComboTime = now;
+    const f = A.baseFreq + A.comboStep * this.coinComboN;
+    this.blip(f, A.dur, A.volume, 'sine', f * 1.5); // two-tone: quick rise
+    this.blip(f * 2, A.dur * 0.7, A.volume * 0.5, 'triangle'); // sparkle
+  },
+  whoosh() {
+    const A = CONFIG.audio.whoosh;
+    this.noise(A.dur, A.volume, A.filterFrom, A.filterTo);
+  },
+  crash() {
+    const A = CONFIG.audio.crash;
+    if (!this.ensureStarted()) return;
+    this.noise(A.noiseDur, A.volume, 3000, 200);           // noise burst
+    this.blip(A.thudFreq, A.thudDur, A.volume * 0.9, 'sine', A.thudFreq * 0.5); // low thud
+  },
+  click() {
+    const A = CONFIG.audio.click;
+    this.blip(A.freq, A.dur, A.volume, 'square');
+  },
+  start() {
+    const A = CONFIG.audio.start;
+    this.blip(A.freqFrom, A.dur, A.volume, 'sine', A.freqTo);
+    this.blip(A.freqFrom * 1.5, A.dur * 0.8, A.volume * 0.6, 'triangle', A.freqTo * 1.5);
+  },
+
+  /* --- mute --- */
+  setMuted(m) {
+    this.muted = m;
+    storageSet(CONFIG.mutedKey, m ? '1' : '0');
+    if (this.master) this.master.gain.setTargetAtTime(m ? 0 : CONFIG.masterVolume, this.ctx.currentTime, 0.05);
+    const btn = document.getElementById('muteBtn');
+    if (btn) {
+      btn.textContent = m ? '🔇' : '🔊';
+      btn.classList.toggle('muted', m);
+    }
+  },
+  toggleMute() { this.setMuted(!this.muted); },
+
+  /* --- pause (Step 6): fade engine/wind out, then suspend the context ---
+     Scheduling after fadeTime so the fade-out is actually heard. */
+  suspendForPause() {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    const delay = CONFIG.audio.engine.fadeTime * 1000;
+    setTimeout(() => {
+      // only suspend if the game is still paused (quick unpause wins)
+      if (state.mode === 'PAUSED' && this.ctx && this.ctx.state === 'running') {
+        this.ctx.suspend();
+      }
+    }, delay);
+  },
+  resumeFromPause() {
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+  },
+
+  /* --- tab visibility: pause/resume the whole context --- */
+  onVisibility() {
+    if (!this.ctx) return;
+    if (document.hidden) {
+      this.hiddenPaused = this.ctx.state === 'running';
+      if (this.hiddenPaused) this.ctx.suspend();
+    } else if (this.hiddenPaused) {
+      this.ctx.resume();
+      this.hiddenPaused = false;
+    }
+  }
+};
+
+/* First user input unlocks audio (browser autoplay rules) */
+function audioUnlock() {
+  AudioManager.started = true;
+  AudioManager.ensureContext();
+  AudioManager.engineState(); // start fades for the current mode
+}
+addEventListener('keydown', audioUnlock, { passive: true });
+addEventListener('pointerdown', audioUnlock, { passive: true });
+document.addEventListener('visibilitychange', () => AudioManager.onVisibility());
+
+/* Mute button + M key */
+const muteBtnEl = document.getElementById('muteBtn');
+muteBtnEl.addEventListener('pointerdown', e => e.stopPropagation());
+muteBtnEl.addEventListener('click', e => {
+  e.stopPropagation();
+  AudioManager.toggleMute();
+});
+
+/* ================================================================
    State
    ================================================================ */
 let scene, camera, renderer, clock;
@@ -293,7 +727,10 @@ let particlePool = [];         // simple coin-pop particles
 let trailPool = [];            // engine glow trail
 
 const state = {
-  mode: 'MENU',                // MENU | PLAYING | GAME_OVER
+  mode: 'MENU',                // MENU | PLAYING | PAUSED | COUNTDOWN | GAME_OVER
+  pausedFrom: 'PLAYING',       // mode to return to after unpause (always PLAYING here)
+  countdownTimer: 0,           // remaining seconds of the resume countdown
+  countdownValue: 0,           // current big number shown (3, 2, 1)
   speed: CONFIG.baseSpeed,
   distance: 0,
   coins: 0,
@@ -926,16 +1363,25 @@ function buildEnvMap() {
     envScene.add(new THREE.Mesh(geo, mat));
     // Bright horizon band + a few bright sun-like patches so the metal has
     // strong highlights to reflect (otherwise the body reads near-black).
+    // Band: taller and HDR-bright (color > 1) so the pearl body picks up a
+    // clear light streak along its flank from any angle.
     const band = new THREE.Mesh(
-      new THREE.CylinderGeometry(9.9, 9.9, 1.4, 32, 1, true),
-      new THREE.MeshBasicMaterial({ color: 0xffd9a0, side: THREE.BackSide })
+      new THREE.CylinderGeometry(9.9, 9.9, 2.6, 32, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(0xfff1d0).multiplyScalar(3.0), // HDR-bright
+        side: THREE.BackSide, toneMapped: false
+      })
     );
+    band.position.y = 0.6; // sit right at the horizon line
     envScene.add(band);
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2 + 0.5;
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + 0.5;
       const patch = new THREE.Mesh(
         new THREE.CircleGeometry(1.6, 16),
-        new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
+        new THREE.MeshBasicMaterial({
+          color: new THREE.Color(0xffffff).multiplyScalar(4.0), // HDR sun highlights
+          side: THREE.DoubleSide, toneMapped: false
+        })
       );
       patch.position.set(Math.sin(a) * 9.5, 2.5 + (i % 2) * 1.5, Math.cos(a) * 9.5);
       patch.lookAt(0, 0, 0);
@@ -951,6 +1397,51 @@ function buildEnvMap() {
   return _envMap;
 }
 
+/* Build the coupe body as an extruded 2D side-profile with bevel, then
+   scale/taper it. Extrude along x so the profile (nose slope, fastback
+   roofline, tapered tail) reads from the side; z afterwards shapes width. */
+function buildCoupeBodyGeo() {
+  // Side profile in (z, y): low pointed nose, rising hood, fastback to tail.
+  // z negative = front. Points go counter-clockwise.
+  const pts = [
+    [-2.15, 0.02],  // nose tip (low)
+    [-1.60, 0.14],  // hood rising
+    [-0.90, 0.20],  // cowl / windshield base
+    [-0.15, 0.52],  // windshield top / roof front
+    [ 0.45, 0.50],  // roof rear (solid roof panel, short cabin)
+    [ 1.55, 0.18],  // fastback slope down to the tail
+    [ 2.05, 0.22],  // tail / spoiler lip height
+    [ 2.15, 0.14],  // rear edge
+    [ 2.05, 0.00],  // underbody rear
+    [-2.05, 0.00]   // underbody front
+  ].map(p => new THREE.Vector2(p[0], p[1]));
+  const geo = new THREE.ExtrudeGeometry(new THREE.Shape(pts), {
+    depth: 1.30,            // body width (before arches)
+    bevelEnabled: true,
+    bevelThickness: 0.10,   // rounds the flanks so it reads as sheet metal
+    bevelSize: 0.10,
+    bevelSegments: 3,
+    curveSegments: 8
+  });
+  geo.center();
+  // Slight taper toward the rear and the nose (narrower than the middle).
+  // Before rotation: x = length axis, z = width axis.
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const len = pos.getX(i);
+    const taper = 1 - 0.16 * Math.max(0, (len + 0.2)) - 0.10 * Math.max(0, -len - 0.5);
+    pos.setZ(i, pos.getZ(i) * Math.max(0.55, taper));
+  }
+  geo.computeVertexNormals();
+  // The profile lies in the XY plane (x = length, y = height) and extrudes
+  // along z (width). Rotate so length runs along the car's z-axis (nose at
+  // -z) and width along x, then scale length to the original hull footprint.
+  geo.rotateY(-Math.PI / 2);
+  geo.scale(1, 1, 0.9);
+  geo.computeVertexNormals();
+  return geo;
+}
+
 function createCar() {
   const g = new THREE.Group();
 
@@ -962,6 +1453,10 @@ function createCar() {
     roughness: CONFIG.carBodyRoughness,
     emissive: CONFIG.carBodyEmissive, emissiveIntensity: CONFIG.carBodyEmissiveIntensity,
     envMap, envMapIntensity: CONFIG.carBodyEnvMapIntensity
+  });
+  const darkMat = new THREE.MeshStandardMaterial({
+    color: 0x0c1220, metalness: 0.4, roughness: 0.6,
+    envMap, envMapIntensity: 0.4
   });
   const accentMat = new THREE.MeshStandardMaterial({
     color: CONFIG.carAccentColor, metalness: 0.6, roughness: 0.3,
@@ -978,99 +1473,114 @@ function createCar() {
     color: new THREE.Color(CONFIG.carTailColor).multiplyScalar(CONFIG.carTailEmissiveIntensity),
     toneMapped: false
   });
-  const thrusterMat = new THREE.MeshBasicMaterial({ color: CONFIG.carAccentColor, toneMapped: false });
+  const discMat = new THREE.MeshBasicMaterial({ color: CONFIG.carAccentColor, toneMapped: false });
 
-  // --- main hull: stretched, flattened sphere => smooth sleek pod ---
-  const hullGeo = new THREE.SphereGeometry(1, 24, 16);
-  hullGeo.scale(0.72, 0.28, 1.75); // wide, low, long (x ~1.44, y ~0.56, z ~3.5)
-  const hull = new THREE.Mesh(hullGeo, bodyMat);
-  hull.position.y = 0.05;
-  g.add(hull);
+  // --- low wide body (extruded fastback profile) ---
+  const bodyGeo = buildCoupeBodyGeo();
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  g.add(body);
 
-  // --- glowing cyan outline shell (back-face, slightly larger) so the car's
-  //     silhouette reads on any background, same trick as the obstacles ---
-  const outline = new THREE.Mesh(hullGeo, new THREE.MeshBasicMaterial({
+  // --- glowing cyan outline shell (back-face, slightly larger) ---
+  const outline = new THREE.Mesh(bodyGeo, new THREE.MeshBasicMaterial({
     color: CONFIG.carOutlineColor, side: THREE.BackSide,
     toneMapped: false, fog: false, transparent: true, opacity: 0.85
   }));
-  outline.position.y = 0.05;
-  outline.scale.set(1.07, 1.35, 1.045);
+  outline.scale.set(1.08, 1.30, 1.05);
   g.add(outline);
 
-  // --- pointed nose cone (lathe) blending into the hull front ---
-  const nosePts = [];
-  for (let i = 0; i <= 8; i++) {
-    const t = i / 8;
-    nosePts.push(new THREE.Vector2(0.62 * Math.sin(Math.PI * 0.5 * (1 - t * 0.85)), t * 0.9));
-  }
-  const nose = new THREE.Mesh(new THREE.LatheGeometry(nosePts, 20), bodyMat);
-  nose.rotation.x = -Math.PI / 2;   // point forward (-z)
-  nose.position.set(0, 0.02, -1.55);
-  nose.scale.set(1, 1, 0.9);
-  g.add(nose);
+  // --- cabin: narrower than the body, sloped windshield + rear window in
+  //     dark glossy glass, with a solid roof panel between them ---
+  const windshield = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.42, 0.06), glassMat);
+  windshield.position.set(0, 0.36, -0.55);
+  windshield.rotation.x = -0.55;           // sloped back
+  g.add(windshield);
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.06, 0.68), bodyMat);
+  roof.position.set(0, 0.54, 0.16);
+  g.add(roof);
+  const rearGlass = new THREE.Mesh(new THREE.BoxGeometry(0.80, 0.40, 0.06), glassMat);
+  rearGlass.position.set(0, 0.34, 0.68);
+  rearGlass.rotation.x = 0.68;             // fastback slope
+  g.add(rearGlass);
+  // thin cyan accent line along the roofline
+  const roofLine = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.03, 0.70), accentMat);
+  roofLine.position.set(0, 0.575, 0.16);
+  g.add(roofLine);
 
-  // --- tapered rear (smaller stretched sphere, sunk into the hull) ---
-  const tailGeo = new THREE.SphereGeometry(1, 20, 12);
-  tailGeo.scale(0.6, 0.24, 0.8);
-  const tail = new THREE.Mesh(tailGeo, bodyMat);
-  tail.position.set(0, 0.1, 1.45);
-  g.add(tail);
-
-  // --- canopy: dark glossy glass bubble ---
-  const canopyGeo = new THREE.SphereGeometry(1, 20, 12);
-  canopyGeo.scale(0.42, 0.3, 0.85);
-  const canopy = new THREE.Mesh(canopyGeo, glassMat);
-  canopy.position.set(0, 0.28, -0.35);
-  g.add(canopy);
-
-  // --- cyan accent line along each flank ---
+  // --- side windows (thin dark glass inset on the cabin sides) ---
   for (const s of [-1, 1]) {
-    const line = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.05, 2.6), accentMat);
-    line.position.set(s * 0.66, 0.12, 0.1);
-    g.add(line);
+    const win = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.26, 1.05), glassMat);
+    win.position.set(s * 0.42, 0.42, 0.08);
+    g.add(win);
   }
 
-  // --- LED headlight bar across the nose ---
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.07, 0.07),
-    new THREE.MeshBasicMaterial({ color: 0xeafcff, toneMapped: false }));
-  head.position.set(0, 0.06, -2.18);
+  // --- rear view: full-width red LED taillight bar ---
+  const tailBar = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.09, 0.06), tailMat);
+  tailBar.position.set(0, 0.20, 1.62);
+  g.add(tailBar);
+  // small rear spoiler / lip
+  const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.30, 0.05, 0.30), darkMat);
+  spoiler.position.set(0, 0.30, 1.52);
+  g.add(spoiler);
+  // rear diffuser at the bottom
+  const diffuser = new THREE.Mesh(new THREE.BoxGeometry(1.20, 0.16, 0.25), darkMat);
+  diffuser.position.set(0, 0.06, 1.55);
+  g.add(diffuser);
+  // two small glowing vents in the diffuser (exhaust-free)
+  for (const s of [-1, 1]) {
+    const vent = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.06, 0.05), accentMat);
+    vent.position.set(s * 0.35, 0.07, 1.68);
+    g.add(vent);
+  }
+
+  // --- front: LED headlight strip + low pointed nose accent ---
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.06, 0.06),
+    new THREE.MeshBasicMaterial({ color: CONFIG.carHeadlightColor, toneMapped: false }));
+  head.position.set(0, 0.10, -1.98);
   g.add(head);
 
-  // --- red taillight bar across the rear ---
-  const tailBar = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.08, 0.06), tailMat);
-  tailBar.position.set(0, 0.2, 2.15);
-  g.add(tailBar);
-
-  // --- small wing fins (no wheels: it flies) ---
+  // --- side details: mirrors, door lines, flank accent line, wheel arches ---
   for (const s of [-1, 1]) {
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.04, 0.45), bodyMat);
-    fin.position.set(s * 0.82, 0.18, 1.15);
-    fin.rotation.z = s * 0.28; // angled up
-    fin.rotation.y = s * 0.15;
-    g.add(fin);
-    // fin tip light
-    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.4), accentMat);
-    tip.position.set(s * 1.05, 0.28, 1.15);
-    g.add(tip);
+    // side mirror (small)
+    const mir = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.08, 0.10), darkMat);
+    mir.position.set(s * 0.78, 0.36, -0.42);
+    g.add(mir);
+    // door line (thin dark groove)
+    const door = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.16, 0.02), darkMat);
+    door.position.set(s * 0.62, 0.16, 0.28);
+    g.add(door);
+    // thin cyan accent line along the flank
+    const line = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.045, 2.7), accentMat);
+    line.position.set(s * 0.64, 0.13, 0.05);
+    g.add(line);
+    // wheel arches (dark torus segments on the body flanks)
+    for (const z of [CONFIG.carWheelFrontZ, CONFIG.carWheelRearZ]) {
+      const arch = new THREE.Mesh(
+        new THREE.TorusGeometry(CONFIG.carWheelRadius + 0.08, 0.045, 8, 14, Math.PI),
+        darkMat);
+      arch.position.set(s * 0.60, 0.02, z);
+      arch.rotation.y = Math.PI / 2; // half-torus over the disc
+      g.add(arch);
+    }
   }
 
-  // --- hovering thrusters + glowing engine rings at the back ---
+  // --- four hover wheels: glowing cyan rings under the body ---
   for (const s of [-1, 1]) {
-    // pod (dark metal)
-    const pod = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), bodyMat);
-    pod.scale.set(0.22, 0.16, 0.35);
-    pod.position.set(s * CONFIG.carThrusterX, -0.08, CONFIG.carThrusterZ);
-    g.add(pod);
-    // glowing ring (torus) around the exhaust
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.045, 10, 20), thrusterMat);
-    ring.position.set(s * CONFIG.carThrusterX, -0.05, CONFIG.carThrusterZ + 0.28);
-    g.add(ring);
-    // under-thruster glow disc facing down
-    const disc = new THREE.Mesh(new THREE.CircleGeometry(0.18, 16),
-      new THREE.MeshBasicMaterial({ color: CONFIG.carAccentColor, transparent: true, opacity: 0.5, toneMapped: false }));
-    disc.rotation.x = -Math.PI / 2;
-    disc.position.set(s * CONFIG.carThrusterX, -0.26, CONFIG.carThrusterZ);
-    g.add(disc);
+    for (const z of [CONFIG.carWheelFrontZ, CONFIG.carWheelRearZ]) {
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(CONFIG.carWheelRadius, 0.055, 10, 22), discMat);
+      ring.position.set(s * CONFIG.carWheelX, -0.10, z);
+      ring.rotation.x = Math.PI / 2; // lying flat, like a hover disc
+      g.add(ring);
+      // soft glow disc filling the ring
+      const fill = new THREE.Mesh(new THREE.CircleGeometry(CONFIG.carWheelRadius * 0.9, 18),
+        new THREE.MeshBasicMaterial({
+          color: CONFIG.carAccentColor, transparent: true, opacity: 0.35,
+          toneMapped: false, depthWrite: false
+        }));
+      fill.rotation.x = -Math.PI / 2;
+      fill.position.set(s * CONFIG.carWheelX, -0.10, z);
+      g.add(fill);
+    }
   }
 
   // --- neon underglow strip (thin bright plane under the hull) ---
@@ -1387,6 +1897,7 @@ function checkCollisions() {
       c.userData.active = false;
       c.visible = false;
       state.coins++;
+      AudioManager.coin();
       coinPop(c.position);
       updateHUD();
     }
@@ -1398,6 +1909,21 @@ function checkCollisions() {
    ================================================================ */
 function onKeyDown(e) {
   keys[e.code] = true;
+
+  // M toggles mute (works in any mode)
+  if (e.code === 'KeyM') AudioManager.toggleMute();
+
+  // --- pause controls (Step 6) ---
+  if (e.code === 'KeyP' || e.code === 'Escape') {
+    if (state.mode === 'PLAYING') { pauseGame(); return; }
+    if (state.mode === 'PAUSED' && e.code === 'Escape') { resumeGame(); return; }
+  }
+  if (state.mode === 'PAUSED') {
+    if (e.code === 'Enter' || e.code === 'Space') { resumeGame(); e.preventDefault(); return; }
+    if (e.code === 'KeyR') { restartFromPause(); return; }
+  }
+  // No input handling at all while the resume countdown runs (world frozen)
+  if (state.mode === 'COUNTDOWN') return;
 
   // Difficulty selection (menu only): 1/2/3 or Left/Right arrows
   if (state.mode === 'MENU') {
@@ -1426,7 +1952,9 @@ function onKeyDown(e) {
 function onPointerDown(e) {
   // Tap/click to start or restart (touch swipes are handled on touchend;
   // clicks on overlay buttons are handled by their own listeners)
-  if (state.mode !== 'PLAYING' && e.pointerType !== 'touch') startGame();
+  // PAUSED/COUNTDOWN taps are consumed by the pause overlay buttons only.
+  if (state.mode !== 'PLAYING' && state.mode !== 'PAUSED' && state.mode !== 'COUNTDOWN'
+      && e.pointerType !== 'touch') startGame();
 }
 
 function onTouchStart(e) {
@@ -1442,7 +1970,12 @@ function onTouchEnd(e) {
   const dy = t.clientY - swipeStart.y;
   swipeStart = null;
 
-  if (state.mode !== 'PLAYING') { startGame(); return; }
+  if (state.mode !== 'PLAYING') {
+    // A tap while paused / countdown does NOT restart or resume — only the
+    // pause buttons do. Tap-to-start is only for MENU / GAME_OVER.
+    if (state.mode === 'MENU' || state.mode === 'GAME_OVER') startGame();
+    return;
+  }
 
   const THRESH = 30;
   if (Math.abs(dx) < THRESH && Math.abs(dy) < THRESH) return; // tap, not swipe
@@ -1455,11 +1988,13 @@ function onTouchEnd(e) {
 
 function moveLane(dir) {
   const n = Math.max(0, Math.min(CONFIG.laneCount - 1, state.lane + dir));
+  if (n !== state.lane) AudioManager.whoosh();
   state.lane = n;
 }
 
 function moveHeight(dir) {
   const n = Math.max(0, Math.min(CONFIG.heightLevels - 1, state.height + dir));
+  if (n !== state.height) AudioManager.whoosh();
   state.height = n;
 }
 
@@ -1505,6 +2040,7 @@ function refreshMenuUI() {
 function selectDifficulty(diff) {
   if (!DIFFICULTY_PRESETS[diff]) return;
   applyDifficulty(diff);
+  AudioManager.click();
   refreshMenuUI();
 }
 
@@ -1517,14 +2053,104 @@ for (const btn of diffRow.querySelectorAll('.diffBtn')) {
 menuBtn.addEventListener('pointerdown', e => e.stopPropagation());
 menuBtn.addEventListener('click', e => { e.stopPropagation(); showMenu(); });
 
+/* ================================================================
+   Pause (Step 6)
+   ================================================================ */
+const pauseOverlay = document.getElementById('pauseOverlay');
+const pauseStats = document.getElementById('pauseStats');
+const pauseBtn = document.getElementById('pauseBtn');
+const countdownEl = document.getElementById('countdown');
+
+/* Local buttons must not reach the game input handlers */
+for (const b of [pauseBtn,
+  document.getElementById('resumeBtn'),
+  document.getElementById('pRestartBtn'),
+  document.getElementById('pMenuBtn')]) {
+  b.addEventListener('pointerdown', e => e.stopPropagation());
+}
+pauseBtn.addEventListener('click', e => { e.stopPropagation(); if (state.mode === 'PLAYING') pauseGame(); });
+document.getElementById('resumeBtn').addEventListener('click', e => { e.stopPropagation(); if (state.mode === 'PAUSED') resumeGame(); });
+document.getElementById('pRestartBtn').addEventListener('click', e => { e.stopPropagation(); if (state.mode === 'PAUSED') restartFromPause(); });
+document.getElementById('pMenuBtn').addEventListener('click', e => { e.stopPropagation(); if (state.mode === 'PAUSED') showMenu(); });
+
+function pauseGame() {
+  if (state.mode !== 'PLAYING') return;
+  state.mode = 'PAUSED';
+  // Flush held movement keys so nothing fires the instant we resume
+  for (const k in keys) keys[k] = false;
+  pauseStats.innerHTML =
+    'Difficulty: <b>' + currentDifficulty.toUpperCase() + '</b><br>' +
+    'Score: <b>' + state.score + '</b> &nbsp;·&nbsp; Best (' + currentDifficulty + '): <b>' +
+    getBestScore(currentDifficulty) + '</b>';
+  pauseOverlay.classList.remove('hidden');
+  pauseBtn.classList.add('hidden');
+  AudioManager.engineState();      // engine/wind fade to 0 (runActive() is 0)
+  AudioManager.suspendForPause();  // then suspend the context
+}
+
+function resumeGame() {
+  if (state.mode !== 'PAUSED') return;
+  pauseOverlay.classList.add('hidden');
+  AudioManager.resumeFromPause();
+  AudioManager.engineState();      // engine fades back in
+  // 3-2-1 countdown: world stays frozen, rendering continues
+  state.mode = 'COUNTDOWN';
+  state.countdownValue = 3;
+  state.countdownTimer = CONFIG.resumeCountdownStep;
+  countdownEl.textContent = '3';
+  countdownEl.classList.remove('hidden');
+  AudioManager.click();
+  // Drop any accumulated clock delta so the first playing frame gets a
+  // normal small dt (no huge time jump from the paused period).
+  if (clock) clock.getDelta();
+}
+
+function restartFromPause() {
+  if (state.mode !== 'PAUSED') return;
+  pauseOverlay.classList.add('hidden');
+  countdownEl.classList.add('hidden');
+  AudioManager.resumeFromPause();
+  startGame(); // resetGame + difficulty preset + audio state, same as normal restart
+}
+
+function updateCountdown(dt) {
+  state.countdownTimer -= dt;
+  if (state.countdownTimer > 0) return;
+  state.countdownValue--;
+  if (state.countdownValue > 0) {
+    state.countdownTimer = CONFIG.resumeCountdownStep;
+    countdownEl.textContent = String(state.countdownValue);
+    AudioManager.click();
+  } else {
+    countdownEl.classList.add('hidden');
+    state.mode = 'PLAYING';
+    pauseBtn.classList.remove('hidden');
+  }
+}
+
+/* Auto-pause when the tab loses focus (visibilitychange + blur). */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && state.mode === 'PLAYING') pauseGame();
+});
+addEventListener('blur', () => {
+  if (state.mode === 'PLAYING') pauseGame();
+});
+
 function startGame() {
   resetGame();
   state.mode = 'PLAYING';
+  AudioManager.start();
+  AudioManager.engineState(); // fade engine in, ambient out
   overlay.classList.add('hidden');
+  pauseOverlay.classList.add('hidden');
+  countdownEl.classList.add('hidden');
+  pauseBtn.classList.remove('hidden'); // on-screen pause button only while PLAYING
 }
 
 function showMenu() {
   state.mode = 'MENU';
+  AudioManager.resumeFromPause(); // make sure the ctx is running again
+  AudioManager.engineState(); // fade engine out, ambient in
   ovTitle.textContent = 'NEON RUNNER';
   ovMsg.innerHTML = 'Arrow keys / WASD or swipe to move.<br>Dodge obstacles, collect coins.';
   diffRow.style.display = 'flex';
@@ -1536,12 +2162,20 @@ function showMenu() {
   hint.style.display = 'block';
   refreshMenuUI();
   overlay.classList.remove('hidden');
+  pauseOverlay.classList.add('hidden');
+  countdownEl.classList.add('hidden');
+  pauseBtn.classList.add('hidden');
   resetGame(); // clear the field so the menu shows a clean road
 }
 
 function gameOver() {
   state.mode = 'GAME_OVER';
   state.isNewBest = false;
+  pauseOverlay.classList.add('hidden');
+  countdownEl.classList.add('hidden');
+  pauseBtn.classList.add('hidden');
+  AudioManager.crash();
+  AudioManager.engineState(); // fade engine out (ambient stays off)
 
   // Best score per difficulty
   const finalScore = computeScore();
@@ -1582,6 +2216,10 @@ function resetGame() {
   state.height = 0;
   state.spawnTimer = 0;
 
+  // Fresh audio state for the new run
+  AudioManager.coinComboN = 0;
+  AudioManager.coinComboTime = -99;
+
   // Deactivate all pooled objects
   for (const o of obstaclePool) { o.userData.active = false; o.visible = false; }
   for (const c of coinPool) { c.userData.active = false; c.visible = false; }
@@ -1618,6 +2256,11 @@ function resetGame() {
 function update(dt) {
   // If an init step failed, its objects may be missing — skip them gracefully
   if (!car) return;
+
+  // PAUSED / COUNTDOWN: the whole world is frozen (scroll, spawning, coins,
+  // particles, trail, timers). Only the resume countdown advances.
+  if (state.mode === 'PAUSED') return;
+  if (state.mode === 'COUNTDOWN') { updateCountdown(dt); return; }
 
   // Coins spin even in menu (nice idle look)
   for (const c of coinPool) if (c.userData.active) c.rotation.y += CONFIG.coinSpin * dt;
@@ -1658,6 +2301,11 @@ function update(dt) {
   state.speed = Math.min(CONFIG.maxSpeed, state.speed + CONFIG.speedIncreasePerSecond * dt);
   state.distance += state.speed * dt;
   updateHUD();
+
+  // Engine hum follows the current speed (param writes only, no allocations)
+  AudioManager.engineUpdate(
+    THREE.MathUtils.clamp(
+      (state.speed - CONFIG.baseSpeed) / Math.max(1, CONFIG.maxSpeed - CONFIG.baseSpeed), 0, 1));
 
   // --- keyboard held movement (per-press feel: respond to fresh presses) ---
   if (keys['ArrowLeft'] || keys['KeyA']) { moveLane(-1); keys['ArrowLeft'] = keys['KeyA'] = false; }
@@ -1755,6 +2403,7 @@ function onResize() {
    ================================================================ */
 initScene();
 showMenu(); // resets the field and applies the restored difficulty
+AudioManager.setMuted(AudioManager.muted); // sync the mute button icon at startup
 
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.05); // clamp big dt (tab switch)
