@@ -1,0 +1,1699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>Futuristic Runner</title>
+<style>
+  /* ============ HUD / UI overlay (HTML, not canvas) ============ */
+  html, body { margin: 0; padding: 0; overflow: hidden; width: 100%; height: 100%; background: #0a0a1a; }
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0; padding: 12px 18px;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    font-family: 'Segoe UI', Arial, sans-serif; color: #e0f6ff;
+    pointer-events: none; text-shadow: 0 0 6px rgba(0,200,255,.8);
+    box-sizing: border-box;
+  }
+  .hud-item { font-size: 20px; font-weight: 600; }
+  .hud-item span { color: #ffd34d; }
+  #overlay {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    justify-content: center; align-items: center; gap: 14px;
+    background: rgba(6, 10, 26, 0.30); color: #e0f6ff;
+    font-family: 'Segoe UI', Arial, sans-serif; text-align: center;
+  }
+  /* Gradient panel behind the text only (no blur) so the scene stays visible */
+  #ovPanel {
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+    padding: 28px 44px; border-radius: 16px;
+    background: linear-gradient(180deg, rgba(8,12,30,0.10) 0%, rgba(8,12,30,0.55) 60%, rgba(8,12,30,0.72) 100%);
+  }
+  #overlay h1 { font-size: 42px; margin: 0; letter-spacing: 4px; color: #35e0ff; text-shadow: 0 0 18px rgba(53,224,255,.9); }
+  #overlay p { font-size: 18px; margin: 4px 0; color: #a8c8e0; }
+  #overlay .stats { font-size: 22px; color: #ffd34d; }
+  #overlay.hidden { display: none; }
+  #hint { font-size: 14px; color: #6a8aa0; }
+  /* No text selection when double-clicking buttons or the overlay */
+  #overlay, #hud, button { user-select: none; -webkit-user-select: none; }
+  .diffBtn {
+    font-family: inherit; font-size: 20px; font-weight: 700; letter-spacing: 2px;
+    padding: 16px 26px; min-width: 110px; border-radius: 10px; cursor: pointer;
+    color: #a8c8e0; background: rgba(20,32,60,.85); border: 2px solid #2a4a6a;
+    transition: all .15s;
+  }
+  .diffBtn.selected {
+    color: #0a1030; background: #35e0ff; border-color: #35e0ff;
+    box-shadow: 0 0 18px rgba(53,224,255,.8);
+  }
+  #menuBtn {
+    font-family: inherit; font-size: 16px; font-weight: 600; padding: 10px 22px;
+    border-radius: 8px; cursor: pointer; color: #a8c8e0;
+    background: rgba(20,32,60,.85); border: 2px solid #2a4a6a;
+  }
+</style>
+</head>
+<body>
+  <!-- HUD -->
+  <div id="hud">
+    <div class="hud-item">COINS <span id="hudCoins">0</span></div>
+    <div class="hud-item">SCORE <span id="hudScore">0</span></div>
+    <div class="hud-item" id="hudSpeed">0 km/h</div>
+    <div class="hud-item"><span id="hudDist">0</span> m</div>
+  </div>
+
+  <!-- Menu / Game Over overlay -->
+  <div id="overlay">
+    <div id="ovPanel">
+      <h1 id="ovTitle">NEON RUNNER</h1>
+      <p id="ovMsg">Arrow keys / WASD or swipe to move.<br>Dodge obstacles, collect coins.</p>
+
+      <!-- Difficulty selection (menu only) -->
+      <div id="diffRow" style="display:flex; gap:14px; margin:10px 0;">
+        <button class="diffBtn" data-diff="easy">EASY</button>
+        <button class="diffBtn" data-diff="medium">MEDIUM</button>
+        <button class="diffBtn" data-diff="hard">HARD</button>
+      </div>
+      <p id="bestLine" style="font-size:16px; color:#ffd34d;"></p>
+
+      <div class="stats" id="ovStats" style="display:none"></div>
+      <div id="newBest" style="display:none; font-size:20px; font-weight:bold; color:#35ff9e; text-shadow:0 0 10px #35ff9e;">★ NEW BEST! ★</div>
+      <p id="startLine">Press <b>Space</b> / <b>Enter</b> or tap to start</p>
+      <button id="menuBtn" style="display:none;">MENU</button>
+      <p id="hint">1/2/3 or ←/→ to pick difficulty · Esc for menu</p>
+    </div>
+  </div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ================================================================
+   CONFIG — ALL tunable values live here. For difficulty presets
+   (Step 2) you will swap this object's values, nothing else.
+   ================================================================ */
+const CONFIG = {
+  // --- speed --- (defaults = medium; DIFFICULTY_PRESETS below override per run)
+  baseSpeed: 22,            // world units per second at start (easy first ~15s)
+  maxSpeed: 70,             // speed cap
+  speedIncreasePerSecond: 0.25, // units per second added per elapsed second
+
+  // --- player movement ---
+  laneWidth: 3.2,           // horizontal distance between lane centers
+  laneCount: 3,
+  heightLevels: 3,          // vertical fly levels
+  heightStep: 2.2,          // vertical distance between levels
+  groundOffset: 1.2,        // y of the lowest flying level
+  laneLerp: 10,             // lerp factor for horizontal move (per second)
+  heightLerp: 8,            // lerp factor for vertical move (per second)
+  maxRoll: 0.45,            // radians of car roll when changing lane
+  rollLerp: 8,
+
+  // --- spawning ---
+  spawnDistance: 150,       // how far ahead of the car obstacles/coins spawn
+  minSecondsBetweenObstacleRows: 1.5, // time-based row spacing: fair at any speed
+  obstacleDensity: 5,       // max cells blocked per row (of 9) — always leaves a path
+  coinSpawnChance: 0.65,    // chance a spawn cycle also drops coins
+  scoreMultiplier: 1,       // set by difficulty preset
+  coinLineCount: [3, 7],    // min/max coins in a line/arc
+  coinSpacing: 2.2,         // z spacing between coins in a line
+  coinArcHeight: 1.6,       // arc peak for coin arcs
+
+  // --- fairness ---
+  minFreeLanes: 1,          // every obstacle pattern leaves >= this many passable cells
+
+  // --- world / visuals ---
+  roadWidth: 12,
+  roadLength: 300,          // length of one recycled road segment
+  segmentCount: 4,          // number of road segments in the pool
+  fogNear: 90,
+  fogFar: 280,
+  skyTopColor: 0x0a0730,    // dark blue/purple zenith
+  skyHorizonColor: 0xd85a7f, // glowing orange/pink horizon (also = fog color)
+  sunColor: 0xffc46b,
+  sunGlowColor: 0xff8a5c,
+  starCount: 400,
+  fov: 70,
+  fovSpeedBoost: 10,        // extra FOV degrees at max speed (speed feel)
+  cameraLerp: 5,
+  cameraBack: 10,
+  cameraUp: 5.5,
+  cameraLookAhead: 22,      // how far ahead of the car the camera looks (tilt)
+
+  // --- city ---
+  buildingSpan: 320,        // z-range the building pool covers
+  buildingsPerSide: { low: 18, high: 40 },
+  buildingNearX: [12, 28],  // x-range of the near layer (>= 12: never covers the road)
+  buildingMaxH: 60,         // keep the skyline below the screen top
+  buildingMaxW: 14,
+  buildingGapChance: 0.25,  // chance a slot is skipped -> sky/sun visible between buildings
+  bodyColorLo: 0x14102e,    // dark blue/purple body range (varied per building)
+  bodyColorHi: 0x241b52,
+  bodyEmissiveColor: 0x120a2e, // dark purple tint (NOT white: white flattens to gray)
+  bodyEmissiveIntensity: 0.4,
+  windowGridCols: 6,        // lit window squares per wall (cols x rows budget)
+  windowGridRows: 10,
+  windowLitChance: 0.8,     // which windows are lit
+  windowBrightness: 2.2,    // >1 colors on toneMapped:false Basic material = emissive look
+  windowSize: 0.5,
+  windowOffset: 0.08,       // out from the wall to avoid z-fighting
+  windowColors: [0x35e0ff, 0xff4dd2, 0xffd34d], // cyan/magenta/yellow
+  edgeColors: [0x35e0ff, 0xff4dd2],             // neon building outline colors
+  parallaxPerSide: { low: 10, high: 22 },
+  parallaxX: [40, 90],      // far silhouette layer
+  parallaxColor: 0x1a1030,  // darker than the horizon glow
+  parallaxTopColor: 0x4a3a80, // lighter top edge so the skyline reads against the sun
+  archSpacing: 120,         // distance between decorative gates
+  archPoolSize: 6,
+
+  // --- effects ---
+  speedLineCount: { low: 18, high: 36 },
+  speedLineBoost: 2.2,      // how much faster than the world speed lines move
+  trailPoolSize: 30,
+  trailLife: 0.3,
+  stripePulseSpeed: 6,      // rad/s lane-marker brightness pulse
+
+  // --- car (Step 4 visual model; overall size unchanged, hitbox untouched) ---
+  carBodyColor: 0x9fb8d8,   // pearl blue/silver metallic
+  carBodyEmissive: 0x1a2a4a, // subtle emissive tint so the body reads in shadow
+  carBodyEmissiveIntensity: 0.35,
+  carAccentColor: 0x1de0ff, // cyan accent line + glow
+  carTailColor: 0xff2244,   // taillight bar
+  carTailEmissiveIntensity: 2.0,
+  carRimLightColor: 0x35c0ff, // rim light from behind/above the car
+  carRimLightIntensity: 2.5,
+  carUnderGlowOpacity: 0.55,
+  carThrusterX: 0.45,       // thruster x-offset (trail emitters align to these)
+  carThrusterZ: 1.9,
+
+  // --- menu showcase camera ---
+  showcaseSpin: 0.45,         // rad/s car rotation on the menu screen
+  showcaseDist: 7.5,          // camera distance from the car
+  showcaseHeight: 2.6,        // camera height above the car
+  showcaseAngle: 0.6,         // 3/4 view azimuth (rad, off the car's nose)
+  showcaseCamLerp: 2.5,       // how fast the camera eases into showcase position
+
+  // --- ground grid (side ground) ---
+  groundColor: 0x0d0a1e,    // deep purple/black
+  gridSize: 8,              // cell size of the neon grid
+  gridLineColor: 0x18e0ff,  // cyan lines
+  gridLineOpacity: 0.35,
+  gridFog: true,            // lines fade into horizon fog
+
+  // --- obstacle / coin glow ---
+  obstacleEdgeColor: 0xffe0e0, // bright outline on all obstacles
+  coinHaloColor: 0xffc94d,
+  coinHaloScale: 2.0,       // halo sprite size vs coin radius
+
+  // --- quality ---
+  quality: 'auto',          // 'auto' | 'low' | 'high' (auto = low on touch devices)
+  bloomEnabled: false,      // reserved: set true + wire up UnrealBloomPass later.
+                            // kept off for cheap mobile-friendly emissive glow.
+
+  // --- misc ---
+  pixelRatioCap: 2,
+  coinSpin: 4,              // rad/s coin rotation
+  poolSize: { obstacles: 30, coins: 60, particles: 40 }
+};
+
+/* ================================================================
+   DIFFICULTY PRESETS — each entry overrides the CONFIG keys listed
+   in DIFFICULTY_KEYS. appliedPreset tracks the baseline so switching
+   difficulties never leaks values between runs.
+   ================================================================ */
+const DIFFICULTY_PRESETS = {
+  easy:   { baseSpeed: 18, speedIncreasePerSecond: 0.15, maxSpeed: 45,
+            minSecondsBetweenObstacleRows: 1.9, obstacleDensity: 3,
+            coinSpawnChance: 0.75, scoreMultiplier: 1 },
+  medium: { baseSpeed: 22, speedIncreasePerSecond: 0.25, maxSpeed: 60,
+            minSecondsBetweenObstacleRows: 1.5, obstacleDensity: 5,
+            coinSpawnChance: 0.65, scoreMultiplier: 1.5 },
+  hard:   { baseSpeed: 26, speedIncreasePerSecond: 0.4, maxSpeed: 75,
+            minSecondsBetweenObstacleRows: 1.2, obstacleDensity: 7,
+            coinSpawnChance: 0.55, scoreMultiplier: 2 }
+};
+const DIFFICULTY_KEYS = Object.keys(DIFFICULTY_PRESETS.easy);
+const DIFFICULTY_ORDER = ['easy', 'medium', 'hard'];
+const DIFFICULTY_DEFAULTS = {}; // snapshot of CONFIG values before any override
+for (const k of DIFFICULTY_KEYS) DIFFICULTY_DEFAULTS[k] = CONFIG[k];
+
+let currentDifficulty = 'medium';
+
+/* Safe localStorage wrapper — game works even if storage is blocked */
+function storageGet(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function storageSet(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* ignore */ }
+}
+
+function bestScoreKey(diff) { return 'runner_best_' + diff; }
+function getBestScore(diff) { return parseInt(storageGet(bestScoreKey(diff)) || '0', 10) || 0; }
+function setBestScore(diff, score) { storageSet(bestScoreKey(diff), String(score)); }
+
+/* Restore last selected difficulty (falls back to medium) */
+(function restoreDifficulty() {
+  const saved = storageGet('runner_difficulty');
+  if (saved && DIFFICULTY_PRESETS[saved]) currentDifficulty = saved;
+})();
+
+/* Apply a preset to CONFIG: reset every overridden key to its default first,
+   so switching from hard to easy doesn't leave hard values behind. */
+function applyDifficulty(diff) {
+  const preset = DIFFICULTY_PRESETS[diff];
+  for (const k of DIFFICULTY_KEYS) {
+    CONFIG[k] = (preset && k in preset) ? preset[k] : DIFFICULTY_DEFAULTS[k];
+  }
+  currentDifficulty = diff;
+  storageSet('runner_difficulty', diff);
+}
+
+/* ================================================================
+   State
+   ================================================================ */
+let scene, camera, renderer, clock;
+let car;                       // THREE.Group from createCar()
+let worldGroup;                // everything that scrolls toward the camera
+let roadSegments = [];
+let groundSegments = [];     // dark side-ground grid planes (own recycle pool)
+let obstaclePool = [];         // active + inactive obstacle meshes
+let coinPool = [];
+let particlePool = [];         // simple coin-pop particles
+let trailPool = [];            // engine glow trail
+
+const state = {
+  mode: 'MENU',                // MENU | PLAYING | GAME_OVER
+  speed: CONFIG.baseSpeed,
+  distance: 0,
+  coins: 0,
+  lane: 1,                     // 0..laneCount-1
+  height: 0,                   // 0..heightLevels-1
+  targetX: 0,
+  targetY: 0,
+  spawnTimer: 0,
+  score: 0,
+  isNewBest: false
+};
+
+const keys = {};
+let swipeStart = null;
+
+/* ================================================================
+   Scene setup
+   ================================================================ */
+/* Resolve quality: 'auto' -> low on touch devices, high otherwise */
+const QUALITY = (CONFIG.quality === 'auto')
+  ? (('ontouchstart' in window || navigator.maxTouchPoints > 0) ? 'low' : 'high')
+  : CONFIG.quality;
+const q = s => (s[QUALITY] !== undefined ? s[QUALITY] : s); // quality-aware count picker
+
+/* Run one init step; on failure log a clear error and keep going so a single
+   broken feature never blanks the whole scene. */
+function safeStep(name, fn) {
+  try {
+    fn();
+  } catch (err) {
+    console.error('[initScene] step "' + name + '" failed:', err);
+  }
+}
+
+function initScene() {
+  // Core (scene/camera/renderer) is required — if this throws, nothing works,
+  // so it stays OUTSIDE safeStep on purpose.
+  scene = new THREE.Scene();
+  // Fog color matches the horizon glow so distant objects melt into the sky
+  scene.background = new THREE.Color(CONFIG.skyHorizonColor);
+  scene.fog = new THREE.Fog(CONFIG.skyHorizonColor, CONFIG.fogNear, CONFIG.fogFar);
+
+  camera = new THREE.PerspectiveCamera(CONFIG.fov, innerWidth / innerHeight, 0.1, 1200);
+  camera.position.set(0, CONFIG.groundOffset + CONFIG.cameraUp, CONFIG.cameraBack);
+  camera.lookAt(0, CONFIG.groundOffset + 1, -CONFIG.cameraLookAhead);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio,
+    QUALITY === 'low' ? 1.5 : CONFIG.pixelRatioCap));
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  // World container (scrolls toward camera) — must exist before any builder
+  worldGroup = new THREE.Group();
+  scene.add(worldGroup);
+
+  // ---- optional features: each isolated so one failure can't kill the rest ----
+  safeStep('env map', () => {
+    // Build the PMREM env map up front and assign it scene-wide so every
+    // metallic material (car, coins) reflects the sky even without envMap set.
+    const envMap = buildEnvMap();
+    if (envMap) scene.environment = envMap;
+  });
+  safeStep('lights', () => {
+    // Hemisphere for soft sky/ground bounce + directional for shape.
+    // Directional kept modest so building bodies never look gray/washed out.
+    scene.add(new THREE.HemisphereLight(0x8899ff, 0x1a1030, 0.45));
+    const dir = new THREE.DirectionalLight(0xffe0c0, 0.35);
+    dir.position.set(5, 12, 6);
+    scene.add(dir);
+  });
+  safeStep('sky (dome/stars/sun)', buildSky);
+  safeStep('ground', buildGround);
+  safeStep('road', buildRoad);
+  safeStep('city', buildCity);
+  safeStep('arches', buildArches);
+  safeStep('speed lines', buildSpeedLines);
+  safeStep('pools (obstacles/coins/particles/trail)', buildPools);
+
+  // Player car — required for gameplay but not for rendering a frame
+  safeStep('car', () => {
+    car = createCar();
+    car.position.set(laneX(state.lane), laneY(state.height), 0);
+    scene.add(car);
+  });
+
+  clock = new THREE.Clock();
+
+  addEventListener('resize', onResize);
+  addEventListener('keydown', onKeyDown);
+  addEventListener('keyup', e => keys[e.code] = false);
+  addEventListener('touchstart', onTouchStart, { passive: true });
+  addEventListener('touchend', onTouchEnd, { passive: true });
+  addEventListener('pointerdown', onPointerDown);
+}
+
+/* Road: segments with moving lane lines (lines are just stripes on the segment) */
+function buildRoad() {
+  const stripeGeo = new THREE.PlaneGeometry(0.15, 2);
+  const stripeMat = new THREE.MeshBasicMaterial({ color: 0x40e0ff, transparent: true, opacity: 0.8 });
+  stripeMats.push(stripeMat);
+  // Subtle center light strip (magenta) along each segment
+  const centerMat = new THREE.MeshBasicMaterial({ color: 0xff4dd2, transparent: true, opacity: 0.4 });
+  stripeMats.push(centerMat);
+  const roadMat = new THREE.MeshStandardMaterial({ color: 0x141c30, roughness: 0.9 });
+
+  for (let i = 0; i < CONFIG.segmentCount; i++) {
+    const seg = new THREE.Group();
+    const road = new THREE.Mesh(
+      new THREE.PlaneGeometry(CONFIG.roadWidth, CONFIG.roadLength),
+      roadMat
+    );
+    road.rotation.x = -Math.PI / 2;
+    seg.add(road);
+
+    // Lane divider stripes along the segment
+    for (let l = 1; l < CONFIG.laneCount; l++) {
+      const x = -CONFIG.roadWidth / 2 + (CONFIG.roadWidth / CONFIG.laneCount) * l;
+      for (let z = -CONFIG.roadLength / 2; z < CONFIG.roadLength / 2; z += 8) {
+        const s = new THREE.Mesh(stripeGeo, stripeMat);
+        s.rotation.x = -Math.PI / 2;
+        s.position.set(x, 0.01, z);
+        seg.add(s);
+      }
+    }
+    // Glowing edges
+    const edgeMat = new THREE.MeshBasicMaterial({ color: 0x35e0ff });
+    for (const side of [-1, 1]) {
+      const edge = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.3, CONFIG.roadLength), edgeMat);
+      edge.position.set(side * (CONFIG.roadWidth / 2 + 0.1), 0.15, 0);
+      seg.add(edge);
+    }
+
+    seg.position.z = -i * CONFIG.roadLength;
+    const center = new THREE.Mesh(new THREE.PlaneGeometry(0.1, CONFIG.roadLength), centerMat);
+    center.rotation.x = -Math.PI / 2;
+    center.position.y = 0.012;
+    seg.add(center);
+    worldGroup.add(seg);
+    roadSegments.push(seg);
+  }
+}
+
+/* ================================================================
+   Ground: dark side ground with a faint neon grid, scrolling with the
+   world (children of worldGroup). Fades into the horizon via fog.
+   ================================================================ */
+function buildGround() {
+  const mat = new THREE.MeshStandardMaterial({ color: CONFIG.groundColor, roughness: 1 });
+  const width = 240; // extends well past the far building layer
+  const geo = new THREE.PlaneGeometry(width, CONFIG.roadLength);
+
+  // Grid lines: one LineSegments per segment, cheap
+  const pts = [];
+  const half = width / 2, len = CONFIG.roadLength, cell = CONFIG.gridSize;
+  for (let x = -half; x <= half; x += cell) { pts.push(x, 0, -len / 2, x, 0, len / 2); }
+  for (let z = -len / 2; z <= len / 2; z += cell) { pts.push(-half, 0, z, half, 0, z); }
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const lineMat = new THREE.LineBasicMaterial({
+    color: CONFIG.gridLineColor, transparent: true, opacity: CONFIG.gridLineOpacity
+  });
+
+  for (let i = 0; i < CONFIG.segmentCount; i++) {
+    const grp = new THREE.Group();
+    const plane = new THREE.Mesh(geo, mat);
+    plane.rotation.x = -Math.PI / 2;
+    plane.position.y = -0.05;
+    grp.add(plane);
+
+    if (QUALITY !== 'low') {
+      // two line layers: cyan main grid + sparser magenta cross-lines for depth
+      const lines = new THREE.LineSegments(lineGeo, lineMat);
+      lines.position.y = -0.02;
+      grp.add(lines);
+      const magGeo = lineGeo.clone();
+      magGeo.rotateY(Math.PI / 4);
+      const mag = new THREE.LineSegments(magGeo, new THREE.LineBasicMaterial({
+        color: 0xff4dd2, transparent: true, opacity: CONFIG.gridLineOpacity * 0.4
+      }));
+      mag.position.y = -0.02;
+      mag.scale.set(1.4, 1, 1.4);
+      grp.add(mag);
+    }
+
+    grp.position.z = -i * CONFIG.roadLength;
+    worldGroup.add(grp);
+    groundSegments.push(grp); // own pool: recycle math must use its own length
+  }
+}
+
+/* ================================================================
+   Sky: gradient dome (shader), stars, glowing sun on the horizon.
+   All static — built once, never rebuilt on restart.
+   ================================================================ */
+let skyUniforms, stripeMats = [];
+
+function buildSky() {
+  // Gradient dome via a small shader; horizonColor matches the fog exactly
+  skyUniforms = {
+    topColor:     { value: new THREE.Color(CONFIG.skyTopColor) },
+    horizonColor: { value: new THREE.Color(CONFIG.skyHorizonColor) }
+  };
+  const skyMat = new THREE.ShaderMaterial({
+    uniforms: skyUniforms,
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+    vertexShader: `
+      varying vec3 vPos;
+      void main() {
+        vPos = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform vec3 topColor;
+      uniform vec3 horizonColor;
+      varying vec3 vPos;
+      void main() {
+        // h: 1 at zenith, 0 at horizon
+        float h = normalize(vPos).y;
+        float t = smoothstep(-0.05, 0.55, h);
+        gl_FragColor = vec4(mix(horizonColor, topColor, t), 1.0);
+      }`
+  });
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(900, 24, 16), skyMat);
+  scene.add(sky);
+
+  // Stars: instanced tiny quads scattered on the upper dome
+  const starGeo = new THREE.CircleGeometry(1.6, 4);
+  const starMat = new THREE.MeshBasicMaterial({ color: 0xbfd8ff, fog: false });
+  const stars = new THREE.InstancedMesh(starGeo, starMat, CONFIG.starCount);
+  const m = new THREE.Matrix4();
+  for (let i = 0; i < CONFIG.starCount; i++) {
+    // random direction in the upper hemisphere, radius just inside the dome
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(Math.random() * 0.85 + 0.1); // avoid the horizon band
+    const r = 850;
+    const p = new THREE.Vector3(
+      r * Math.sin(phi) * Math.cos(theta),
+      r * Math.cos(phi),
+      r * Math.sin(phi) * Math.sin(theta)
+    );
+    m.makeTranslation(p.x, p.y, p.z);
+    // face the center so the quad is visible
+    const look = new THREE.Matrix4().lookAt(p, new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 1, 0));
+    m.multiply(look);
+    stars.setMatrixAt(i, m);
+  }
+  stars.instanceMatrix.needsUpdate = true;
+  scene.add(stars);
+
+  // Big glowing sun sitting on the horizon, straight ahead
+  const sun = new THREE.Group();
+  const core = new THREE.Mesh(
+    new THREE.CircleGeometry(90, 40),
+    new THREE.MeshBasicMaterial({ color: CONFIG.sunColor, fog: false })
+  );
+  const halo = new THREE.Mesh(
+    new THREE.CircleGeometry(170, 40),
+    new THREE.MeshBasicMaterial({ color: CONFIG.sunGlowColor, transparent: true, opacity: 0.35, fog: false })
+  );
+  halo.position.z = -1;
+  sun.add(core, halo);
+  sun.position.set(0, 60, -830);
+  sun.lookAt(camera.position);
+  scene.add(sun);
+}
+
+/* ================================================================
+   City: instanced buildings on both sides, two depth layers.
+   Both layers are children of worldGroup, so they scroll with the
+   world; depth perception comes naturally from perspective (the far
+   layer sits at much larger |x|). Recycling rewrites only the
+   matrices of buildings that wrap around.
+   ================================================================ */
+const WINDOW_COLORS = CONFIG.windowColors.map(c => new THREE.Color(c).multiplyScalar(CONFIG.windowBrightness));
+const EDGE_COLORS = CONFIG.edgeColors.map(c => new THREE.Color(c));
+const _blackColor = new THREE.Color(0x000000); // parked color for unused slots
+let cityNear, cityFar;
+const _cityMatrix = new THREE.Matrix4();
+
+function buildCity() {
+  // Near layer: lit bodies + window grids + neon edges
+  const nearCount = q(CONFIG.buildingsPerSide) * 2;
+  cityNear = makeBuildingLayer(nearCount, {
+    xRange: CONFIG.buildingNearX, minH: 6, maxH: CONFIG.buildingMaxH * 0.7,
+    w: 7, d: 7, silhouette: false
+  });
+  // Far layer: flat silhouettes for depth, much cheaper
+  const farCount = q(CONFIG.parallaxPerSide) * 2;
+  cityFar = makeBuildingLayer(farCount, {
+    xRange: CONFIG.parallaxX, minH: 20, maxH: CONFIG.buildingMaxH,
+    w: CONFIG.buildingMaxW, d: 10, silhouette: true
+  });
+}
+
+/* Pre-generate one building's window layout: a fixed grid of lit/unlit
+   slots. Palette INDICES only, so recycle reuses the same colors. */
+function genWindows(b) {
+  b.win = [];
+  for (let s = 0; s < CONFIG.windowGridCols * CONFIG.windowGridRows; s++) {
+    b.win.push({
+      lit: Math.random() < CONFIG.windowLitChance,
+      col: Math.floor(Math.random() * WINDOW_COLORS.length)
+    });
+  }
+}
+
+function makeBuildingLayer(count, opt) {
+  const group = new THREE.Group();
+  const SLOTS = opt.silhouette ? 0 : CONFIG.windowGridCols * CONFIG.windowGridRows;
+
+  // --- bodies: per-instance color + vertical vertex gradient (dark base) ---
+  const bodyGeo = new THREE.BoxGeometry(1, 1, 1);
+  const bMat = opt.silhouette
+    ? new THREE.MeshBasicMaterial({ color: CONFIG.parallaxColor })
+    : new THREE.MeshStandardMaterial({
+        color: 0xffffff, roughness: 0.9, vertexColors: true,
+        emissive: CONFIG.bodyEmissiveColor, emissiveIntensity: CONFIG.bodyEmissiveIntensity
+      });
+  // vertex colors: darker at the bottom, lighter at the top (multiplied with
+  // the per-instance color), so towers read as lit-from-above, never flat gray
+  {
+    const pos = bodyGeo.attributes.position;
+    const cols = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      const t = THREE.MathUtils.clamp(pos.getY(i) + 0.5, 0, 1); // 0 base, 1 top
+      const f = 0.55 + 0.45 * t;
+      cols[i * 3]     = f * (1 - 0.25 * t); // red falls toward the top
+      cols[i * 3 + 1] = f * (1 - 0.10 * t); // green falls a little
+      cols[i * 3 + 2] = f;                  // blue stays -> top reads bluer
+    }
+    bodyGeo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  }
+  const bodyMat = bMat;
+  const bodies = new THREE.InstancedMesh(bodyGeo, bodyMat, count);
+  bodies.frustumCulled = false; // instances span the whole corridor
+
+  // --- windows: bright, immune to fog and tone mapping ---
+  const windows = opt.silhouette ? null
+    : new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false, fog: false }), count * SLOTS);
+  if (windows) windows.frustumCulled = false;
+
+  // --- neon edges: top beam + 2 vertical corners, also fog-immune ---
+  const EDGE_COUNT = 3;
+  const edges = opt.silhouette ? null
+    : new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false, fog: false }), count * EDGE_COUNT);
+  if (edges) edges.frustumCulled = false;
+
+  // --- far-layer cap: lighter top slab so the skyline reads against the sun ---
+  const caps = opt.silhouette
+    ? new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshBasicMaterial({ color: CONFIG.parallaxTopColor, fog: false }), count)
+    : null;
+  if (caps) caps.frustumCulled = false;
+
+  const data = [];
+  const _c = new THREE.Color();      // scratch (build time only)
+  const _hi = new THREE.Color(CONFIG.bodyColorHi);
+  for (let i = 0; i < count; i++) {
+    const b = randomBuilding(opt);
+    data.push(b);
+    writeBuildingInstances(bodies, windows, edges, caps, i, b);
+    // body color: per-building variation within the CONFIG range
+    _c.setHex(CONFIG.bodyColorLo).lerp(_hi, Math.random());
+    bodies.setColorAt(i, _c);
+    if (windows) {
+      for (let s = 0; s < SLOTS; s++) {
+        const win = b.win[s];
+        windows.setColorAt(i * SLOTS + s, win.lit ? WINDOW_COLORS[win.col] : _blackColor);
+      }
+      windows.instanceColor.needsUpdate = true;
+    }
+    if (edges) {
+      for (let s = 0; s < EDGE_COUNT; s++) edges.setColorAt(i * EDGE_COUNT + s, b.edgeColor);
+      edges.instanceColor.needsUpdate = true;
+    }
+  }
+  bodies.instanceMatrix.needsUpdate = true;
+  if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
+  group.add(bodies);
+  if (windows) { windows.instanceMatrix.needsUpdate = true; group.add(windows); }
+  if (edges)    { edges.instanceMatrix.needsUpdate = true; group.add(edges); }
+  if (caps)     { caps.instanceMatrix.needsUpdate = true; group.add(caps); }
+
+  group.userData = { data, span: CONFIG.buildingSpan, opt, slots: SLOTS };
+  worldGroup.add(group);
+  return group;
+}
+
+function randomBuilding(opt) {
+  const side = Math.random() < 0.5 ? 1 : -1;
+  const gap = !opt.silhouette && Math.random() < CONFIG.buildingGapChance; // sky gap
+  const b = {
+    side,
+    x: side * (opt.xRange[0] + Math.random() * (opt.xRange[1] - opt.xRange[0])),
+    z: -10 - Math.random() * (CONFIG.buildingSpan - 30), // always ahead of the camera
+    h: gap ? 0.001 : opt.minH + Math.random() * (opt.maxH - opt.minH),
+    w: Math.min(CONFIG.buildingMaxW, opt.w * (0.6 + Math.random() * 0.7)) * (gap ? 0.001 : 1),
+    d: opt.d * (0.7 + Math.random() * 0.6) * (gap ? 0.001 : 1),
+    gap,
+    edgeColor: EDGE_COLORS[Math.floor(Math.random() * EDGE_COLORS.length)]
+  };
+  if (!opt.silhouette) genWindows(b);
+  return b;
+}
+
+/* Write all instance matrices (body, window grid, neon edges, far cap) for building i */
+function writeBuildingInstances(bodies, windows, edges, caps, i, b) {
+  setInstance(bodies, i, b.x, b.h / 2, b.z, b.w, b.h, b.d);
+
+  if (caps) { // far silhouette: lighter cap slab on top
+    setInstance(caps, i, b.x, b.h + 0.3, b.z, b.w * 0.9, 0.7, b.d * 0.9);
+  }
+  if (!windows || !edges) return;
+
+  // Window grid on the road-facing wall, offset from the surface (no z-fighting)
+  const wallX = b.x + b.side * (b.w / 2 + CONFIG.windowOffset);
+  const rows = CONFIG.windowGridRows, cols = CONFIG.windowGridCols;
+  for (let s = 0; s < b.win.length; s++) {
+    const idx = i * b.win.length + s;
+    const win = b.win[s];
+    const c = s % cols;
+    const r = Math.floor(s / cols);
+    if (!win.lit || b.gap) {
+      setInstance(windows, idx, 0, -1000, 0, 0.001, 0.001, 0.001); // parked
+      continue;
+    }
+    const u = (c + 0.5) / cols - 0.5;                 // horizontal fraction
+    const v = (r + 0.5) / rows - 0.5;                 // vertical fraction
+    setInstance(windows, idx,
+      wallX, b.h * (0.5 + v * 0.85), b.z + u * b.d * 0.7,
+      CONFIG.windowSize, CONFIG.windowSize, 0.06);
+  }
+
+  // Neon edges: top beam + 2 vertical corners on the road-facing face
+  const eIdx = i * 3;
+  const t = 0.12; // edge thickness
+  if (b.gap) {
+    setInstance(edges, eIdx,     0, -1000, 0, 0.001, 0.001, 0.001);
+    setInstance(edges, eIdx + 1, 0, -1000, 0, 0.001, 0.001, 0.001);
+    setInstance(edges, eIdx + 2, 0, -1000, 0, 0.001, 0.001, 0.001);
+    return;
+  }
+  setInstance(edges, eIdx,                       // top beam
+    b.x + b.side * (b.w / 2), b.h + 0.05, b.z,
+    t, t, b.d + 0.1);
+  for (const s2 of [0, 1]) {                      // vertical corners
+    const sz = s2 === 0 ? 1 : -1;
+    setInstance(edges, eIdx + 1 + s2,
+      b.x + b.side * (b.w / 2), b.h / 2, b.z + sz * (b.d / 2),
+      t, b.h, t);
+  }
+}
+
+function setInstance(mesh, i, x, y, z, sx, sy, sz) {
+  _cityMatrix.makeScale(sx, sy, sz);
+  _cityMatrix.setPosition(x, y, z);
+  mesh.setMatrixAt(i, _cityMatrix);
+}
+
+/* Recycle: when a building's WORLD z passes behind the camera, wrap it
+   back to the far end with a fresh random shape. Window lit-patterns
+   and instance colors stay as-is (cheap); only matrices are rewritten. */
+function updateCity(layer, dt) {
+  const { data, span, opt } = layer.userData;
+  const bodies = layer.children[0];
+  const windows = layer.children[1] || null;
+  const edges = layer.children[2] || null;
+  const caps = layer.children[3] || null;
+  let dirty = false;
+  for (let i = 0; i < data.length; i++) {
+    const b = data[i];
+    if (b.z + worldGroup.position.z > 20) {
+      // Place at a random world-space distance ahead, converted to local space
+      b.z = -10 - Math.random() * (span - 30) - worldGroup.position.z;
+      b.gap = false; // recycled buildings always come back as real buildings
+      b.h = opt.minH + Math.random() * (opt.maxH - opt.minH);
+      b.w = Math.min(CONFIG.buildingMaxW, opt.w * (0.6 + Math.random() * 0.7));
+      writeBuildingInstances(bodies, windows, edges, caps, i, b);
+      dirty = true;
+    }
+  }
+  if (dirty) {
+    bodies.instanceMatrix.needsUpdate = true;
+    if (windows) windows.instanceMatrix.needsUpdate = true;
+    if (edges) edges.instanceMatrix.needsUpdate = true;
+    if (caps) caps.instanceMatrix.needsUpdate = true;
+  }
+}
+
+/* ================================================================
+   Decorative arches/gates the car flies through (no collision)
+   ================================================================ */
+let archPool = [];
+
+function buildArches() {
+  const frameMat = new THREE.MeshBasicMaterial({ color: 0x35e0ff });
+  const accentMat = new THREE.MeshBasicMaterial({ color: 0xff4dd2 });
+  for (let i = 0; i < CONFIG.archPoolSize; i++) {
+    const arch = new THREE.Group();
+    // Two pillars + top beam, spanning the whole road
+    const pw = 0.5;
+    for (const s of [-1, 1]) {
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(pw, 9, pw), frameMat);
+      pillar.position.set(s * (CONFIG.roadWidth / 2 + 1), 4.5, 0);
+      arch.add(pillar);
+    }
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(CONFIG.roadWidth + 2.5, 0.6, 0.6), accentMat);
+    beam.position.set(0, 9, 0);
+    arch.add(beam);
+    arch.userData = { active: false };
+    arch.visible = false;
+    worldGroup.add(arch);
+    archPool.push(arch);
+  }
+}
+
+function updateArches(dt) {
+  if (!archPool.length) return; // arch step failed at init — skip
+  // Keep arches evenly spaced ahead; recycle when behind the camera
+  for (const arch of archPool) {
+    const wz = arch.position.z + worldGroup.position.z;
+    if (!arch.userData.active) {
+      // place beyond the furthest active arch
+      let minZ = -CONFIG.spawnDistance; // start placing at spawn distance
+      for (const a of archPool) if (a.userData.active) minZ = Math.min(minZ, a.position.z);
+      arch.position.z = minZ - CONFIG.archSpacing;
+      arch.userData.active = true;
+      arch.visible = true;
+    } else if (wz > 15) {
+      arch.position.z -= CONFIG.archPoolSize * CONFIG.archSpacing;
+    }
+  }
+}
+
+/* ================================================================
+   Speed lines: instanced thin streaks beside/above the road that
+   move faster than the world; opacity/length scale with speed.
+   ================================================================ */
+let speedLines;
+function buildSpeedLines() {
+  const count = q(CONFIG.speedLineCount);
+  const geo = new THREE.BoxGeometry(0.05, 0.05, 3);
+  const mat = new THREE.MeshBasicMaterial({ color: 0x9fdcff, transparent: true, opacity: 0.5, fog: false });
+  speedLines = new THREE.InstancedMesh(geo, mat, count);
+  speedLines.userData.data = [];
+  for (let i = 0; i < count; i++) {
+    speedLines.userData.data.push({
+      x: (Math.random() - 0.5) * 30,
+      y: 1 + Math.random() * 14,
+      z: -Math.random() * 120
+    });
+  }
+  scene.add(speedLines);
+}
+
+function updateSpeedLines(dt) {
+  if (!speedLines) return; // speed-line step failed at init — skip
+  const data = speedLines.userData.data;
+  const boost = CONFIG.speedLineBoost;
+  const speedT = (state.speed - CONFIG.baseSpeed) / Math.max(1, CONFIG.maxSpeed - CONFIG.baseSpeed);
+  const visT = THREE.MathUtils.clamp(speedT * 1.5, 0, 1);
+  speedLines.material.opacity = 0.1 + visT * 0.45;
+  const len = 2 + visT * 6;
+  for (let i = 0; i < data.length; i++) {
+    const s = data[i];
+    s.z += state.speed * boost * dt;
+    if (s.z > 15) {
+      s.z -= 130;
+      s.x = (Math.random() - 0.5) * 30;
+      s.y = 1 + Math.random() * 14;
+    }
+    _cityMatrix.makeScale(1, 1, len);
+    _cityMatrix.setPosition(s.x, s.y, s.z);
+    speedLines.setMatrixAt(i, _cityMatrix);
+  }
+  speedLines.instanceMatrix.needsUpdate = true;
+}
+
+/* ================================================================
+   Player car — placeholder built from primitives.
+   Replace with a glTF model later; keep the same Group interface.
+   ================================================================ */
+/* Simple environment map: PMREM over a tiny gradient scene, so the metallic
+   body reflects the sky colors. Skipped entirely on 'low' quality. */
+let _envMap = null;
+function buildEnvMap() {
+  if (QUALITY === 'low') return null;
+  if (_envMap) return _envMap;
+  try {
+    const envScene = new THREE.Scene();
+    // A big sphere with the same gradient shader as the sky + a bright "sun"
+    const mat = new THREE.MeshBasicMaterial({ side: THREE.BackSide });
+    mat.vertexColors = true;
+    const geo = new THREE.SphereGeometry(10, 16, 8);
+    // vertical gradient vertex colors: horizon orange -> zenith dark blue
+    const colors = [];
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const t = THREE.MathUtils.clamp(pos.getY(i) / 10, 0, 1);
+      const c = new THREE.Color(CONFIG.skyHorizonColor).lerp(new THREE.Color(CONFIG.skyTopColor), t);
+      colors.push(c.r, c.g, c.b);
+    }
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    envScene.add(new THREE.Mesh(geo, mat));
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    _envMap = pmrem.fromScene(envScene, 0.04).texture;
+    pmrem.dispose();
+  } catch (err) {
+    console.error('[createCar] env map failed:', err);
+    _envMap = null;
+  }
+  return _envMap;
+}
+
+function createCar() {
+  const g = new THREE.Group();
+
+  const envMap = buildEnvMap();
+
+  // --- materials ---
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: CONFIG.carBodyColor, metalness: 0.9, roughness: 0.35,
+    emissive: CONFIG.carBodyEmissive, emissiveIntensity: CONFIG.carBodyEmissiveIntensity,
+    envMap, envMapIntensity: 1.2
+  });
+  const accentMat = new THREE.MeshStandardMaterial({
+    color: CONFIG.carAccentColor, metalness: 0.6, roughness: 0.3,
+    emissive: CONFIG.carAccentColor, emissiveIntensity: 1.6,
+    envMap, envMapIntensity: 0.5
+  });
+  const glassMat = new THREE.MeshPhysicalMaterial({
+    color: 0x0a1420, metalness: 0.1, roughness: 0.05,
+    clearcoat: 1.0, clearcoatRoughness: 0.06,
+    transparent: true, opacity: 0.75,
+    envMap, envMapIntensity: 1.5
+  });
+  const tailMat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(CONFIG.carTailColor).multiplyScalar(CONFIG.carTailEmissiveIntensity),
+    toneMapped: false
+  });
+  const thrusterMat = new THREE.MeshBasicMaterial({ color: CONFIG.carAccentColor, toneMapped: false });
+
+  // --- main hull: stretched, flattened sphere => smooth sleek pod ---
+  const hullGeo = new THREE.SphereGeometry(1, 24, 16);
+  hullGeo.scale(0.72, 0.28, 1.75); // wide, low, long (x ~1.44, y ~0.56, z ~3.5)
+  const hull = new THREE.Mesh(hullGeo, bodyMat);
+  hull.position.y = 0.05;
+  g.add(hull);
+
+  // --- pointed nose cone (lathe) blending into the hull front ---
+  const nosePts = [];
+  for (let i = 0; i <= 8; i++) {
+    const t = i / 8;
+    nosePts.push(new THREE.Vector2(0.62 * Math.sin(Math.PI * 0.5 * (1 - t * 0.85)), t * 0.9));
+  }
+  const nose = new THREE.Mesh(new THREE.LatheGeometry(nosePts, 20), bodyMat);
+  nose.rotation.x = -Math.PI / 2;   // point forward (-z)
+  nose.position.set(0, 0.02, -1.55);
+  nose.scale.set(1, 1, 0.9);
+  g.add(nose);
+
+  // --- tapered rear (smaller stretched sphere, sunk into the hull) ---
+  const tailGeo = new THREE.SphereGeometry(1, 20, 12);
+  tailGeo.scale(0.6, 0.24, 0.8);
+  const tail = new THREE.Mesh(tailGeo, bodyMat);
+  tail.position.set(0, 0.1, 1.45);
+  g.add(tail);
+
+  // --- canopy: dark glossy glass bubble ---
+  const canopyGeo = new THREE.SphereGeometry(1, 20, 12);
+  canopyGeo.scale(0.42, 0.3, 0.85);
+  const canopy = new THREE.Mesh(canopyGeo, glassMat);
+  canopy.position.set(0, 0.28, -0.35);
+  g.add(canopy);
+
+  // --- cyan accent line along each flank ---
+  for (const s of [-1, 1]) {
+    const line = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.05, 2.6), accentMat);
+    line.position.set(s * 0.66, 0.12, 0.1);
+    g.add(line);
+  }
+
+  // --- LED headlight bar across the nose ---
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.07, 0.07),
+    new THREE.MeshBasicMaterial({ color: 0xeafcff, toneMapped: false }));
+  head.position.set(0, 0.06, -2.18);
+  g.add(head);
+
+  // --- red taillight bar across the rear ---
+  const tailBar = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.08, 0.06), tailMat);
+  tailBar.position.set(0, 0.2, 2.15);
+  g.add(tailBar);
+
+  // --- small wing fins (no wheels: it flies) ---
+  for (const s of [-1, 1]) {
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.04, 0.45), bodyMat);
+    fin.position.set(s * 0.82, 0.18, 1.15);
+    fin.rotation.z = s * 0.28; // angled up
+    fin.rotation.y = s * 0.15;
+    g.add(fin);
+    // fin tip light
+    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.4), accentMat);
+    tip.position.set(s * 1.05, 0.28, 1.15);
+    g.add(tip);
+  }
+
+  // --- hovering thrusters + glowing engine rings at the back ---
+  for (const s of [-1, 1]) {
+    // pod (dark metal)
+    const pod = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), bodyMat);
+    pod.scale.set(0.22, 0.16, 0.35);
+    pod.position.set(s * CONFIG.carThrusterX, -0.08, CONFIG.carThrusterZ);
+    g.add(pod);
+    // glowing ring (torus) around the exhaust
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.045, 10, 20), thrusterMat);
+    ring.position.set(s * CONFIG.carThrusterX, -0.05, CONFIG.carThrusterZ + 0.28);
+    g.add(ring);
+    // under-thruster glow disc facing down
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(0.18, 16),
+      new THREE.MeshBasicMaterial({ color: CONFIG.carAccentColor, transparent: true, opacity: 0.5, toneMapped: false }));
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.set(s * CONFIG.carThrusterX, -0.26, CONFIG.carThrusterZ);
+    g.add(disc);
+  }
+
+  // --- neon underglow strip (thin bright plane under the hull) ---
+  const under = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 2.9),
+    new THREE.MeshBasicMaterial({ color: CONFIG.carAccentColor, transparent: true, opacity: 0.22, toneMapped: false }));
+  under.rotation.x = -Math.PI / 2;
+  under.position.y = -0.22;
+  g.add(under);
+
+  // --- soft glow sprite under the car (canvas radial texture) ---
+  const cnv = document.createElement('canvas');
+  cnv.width = cnv.height = 64;
+  const ctx = cnv.getContext('2d');
+  const grad = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(90,230,255,0.9)');
+  grad.addColorStop(1, 'rgba(90,230,255,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 64, 64);
+  const glowTex = new THREE.CanvasTexture(cnv);
+  const glowSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex, transparent: true, opacity: 0.55, depthWrite: false
+  }));
+  glowSprite.scale.set(2.6, 2.6, 1);
+  glowSprite.position.y = -0.35;
+  g.add(glowSprite);
+
+  // --- subtle point light so the car lights the road under itself ---
+  const pl = new THREE.PointLight(CONFIG.carAccentColor, 1.2, 6, 2);
+  pl.position.set(0, -0.1, 0.5);
+  g.add(pl);
+
+  // --- rim light: small cyan/blue light behind and above the car so its
+  // outline reads against the dark road (fixes black-silhouette-from-behind) ---
+  const rim = new THREE.PointLight(CONFIG.carRimLightColor, CONFIG.carRimLightIntensity, 10, 2);
+  rim.position.set(0, 2.2, 3.5);
+  g.add(rim);
+
+  return g;
+}
+
+/* ================================================================
+   Object pools
+   ================================================================ */
+const OBSTACLE_TYPES = ['box', 'barrier', 'float'];
+
+function buildPools() {
+  // Bright, emissive obstacle materials — clearly different hue family from
+  // the gold coins (red/orange/violet vs yellow) and visible against the dark road.
+  const boxMat    = new THREE.MeshStandardMaterial({ color: 0xff4d6d, roughness: 0.4, emissive: 0xff2244, emissiveIntensity: 1.2 });
+  const barrierMat= new THREE.MeshStandardMaterial({ color: 0xffa500, roughness: 0.5, emissive: 0xff8800, emissiveIntensity: 1.0 });
+  const floatMat  = new THREE.MeshStandardMaterial({ color: 0xb44dff, roughness: 0.4, emissive: 0x9a2bff, emissiveIntensity: 1.2 });
+
+  for (let i = 0; i < CONFIG.poolSize.obstacles; i++) {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), boxMat);
+    // Glowing outline: slightly larger shell rendered with BackSide + bright
+    // emissive color — pops against any background, costs one extra draw per
+    // active obstacle, no per-frame work.
+    const shell = new THREE.Mesh(
+      new THREE.BoxGeometry(1.08, 1.08, 1.08),
+      new THREE.MeshBasicMaterial({
+        color: CONFIG.obstacleEdgeColor, side: THREE.BackSide, toneMapped: false, fog: false
+      })
+    );
+    mesh.add(shell);
+    mesh.visible = false;
+    mesh.userData = { active: false, type: 'box', materials: { box: boxMat, barrier: barrierMat, float: floatMat } };
+    worldGroup.add(mesh);
+    obstaclePool.push(mesh);
+  }
+
+  const coinGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.12, 20);
+  const coinMat = new THREE.MeshStandardMaterial({
+    color: 0xffd34d, metalness: 0.9, roughness: 0.25,
+    emissive: 0xffc400, emissiveIntensity: 1.5, fog: false
+  });
+  // Coin halo: shared radial-gradient sprite texture (gold), soft glow
+  const hcnv = document.createElement('canvas');
+  hcnv.width = hcnv.height = 64;
+  const hctx = hcnv.getContext('2d');
+  const hgrad = hctx.createRadialGradient(32, 32, 2, 32, 32, 32);
+  hgrad.addColorStop(0, 'rgba(255,220,110,0.85)');
+  hgrad.addColorStop(1, 'rgba(255,220,110,0)');
+  hctx.fillStyle = hgrad;
+  hctx.fillRect(0, 0, 64, 64);
+  const haloTex = new THREE.CanvasTexture(hcnv);
+  for (let i = 0; i < CONFIG.poolSize.coins; i++) {
+    const coin = new THREE.Mesh(coinGeo, coinMat);
+    coin.rotation.x = Math.PI / 2; // face the player
+    const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: haloTex, transparent: true, opacity: 0.75, depthWrite: false,
+      blending: THREE.AdditiveBlending, fog: false
+    }));
+    halo.scale.setScalar(CONFIG.coinHaloScale);
+    coin.add(halo);
+    coin.visible = false;
+    coin.userData = { active: false };
+    worldGroup.add(coin);
+    coinPool.push(coin);
+  }
+
+  // Coin-pop particles: tiny boxes with velocity
+  const pMat = new THREE.MeshBasicMaterial({ color: 0xffd34d });
+  const pGeo = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+  for (let i = 0; i < CONFIG.poolSize.particles; i++) {
+    const p = new THREE.Mesh(pGeo, pMat);
+    p.visible = false;
+    p.userData = { active: false, vel: new THREE.Vector3(), life: 0 };
+    scene.add(p);
+    particlePool.push(p);
+  }
+
+  // Engine glow trail behind the car (pooled, scene space)
+  const tMat = new THREE.MeshBasicMaterial({ color: 0x1de0ff, transparent: true, opacity: 0.6 });
+  const tGeo = new THREE.SphereGeometry(0.22, 8, 6);
+  for (let i = 0; i < CONFIG.trailPoolSize; i++) {
+    const t = new THREE.Mesh(tGeo, tMat.clone()); // clone so opacity fades individually
+    t.visible = false;
+    t.userData = { active: false, life: 0 };
+    scene.add(t);
+    trailPool.push(t);
+  }
+}
+
+/* Emit engine trail puffs at the two engine positions */
+let trailTimer = 0;
+function emitTrail(dt) {
+  trailTimer -= dt;
+  if (trailTimer > 0) return;
+  trailTimer = 0.02; // emission rate (seconds between puffs)
+  for (const side of [-1, 1]) {
+    const t = getFromPool(trailPool);
+    if (!t) return;
+    t.userData.active = true;
+    t.userData.life = CONFIG.trailLife;
+    // engine world position: matches the thruster pods from createCar()
+    t.position.set(
+      car.position.x + side * CONFIG.carThrusterX,
+      car.position.y - 0.05,
+      car.position.z + CONFIG.carThrusterZ
+    );
+    t.material.opacity = 0.6;
+    t.scale.setScalar(1);
+    t.visible = true;
+  }
+}
+
+function updateTrail(dt) {
+  for (const t of trailPool) {
+    if (!t.userData.active) continue;
+    t.userData.life -= dt;
+    if (t.userData.life <= 0) { t.userData.active = false; t.visible = false; continue; }
+    const k = t.userData.life / CONFIG.trailLife;
+    t.material.opacity = 0.6 * k;
+    t.scale.setScalar(0.5 + (1 - k) * 1.2); // grows as it fades
+    // drift slightly toward the camera (trail stays behind the car)
+    t.position.z += state.speed * dt * 0.9;
+  }
+}
+
+function getFromPool(pool) {
+  for (const item of pool) if (!item.userData.active) return item;
+  return null;
+}
+
+/* ================================================================
+   Spawning — obstacles & coins
+   ================================================================ */
+const laneX = l => (l - (CONFIG.laneCount - 1) / 2) * CONFIG.laneWidth;
+const laneY = h => CONFIG.groundOffset + h * CONFIG.heightStep;
+
+/* Cells = (lane, height) combos. A pattern blocks some cells; we guarantee
+   at least CONFIG.minFreeLanes passable lane/height combos remain. */
+function spawnObstaclePattern() {
+  // Build list of all (lane, height) cells
+  const cells = [];
+  for (let l = 0; l < CONFIG.laneCount; l++)
+    for (let h = 0; h < CONFIG.heightLevels; h++)
+      cells.push({ l, h });
+
+  // Randomly pick cells to block, capped by obstacleDensity; always leave
+  // at least CONFIG.minFreeLanes passable cells (fairness guarantee).
+  const totalCells = cells.length;
+  const maxBlocked = Math.min(CONFIG.obstacleDensity, totalCells - CONFIG.minFreeLanes);
+  const blockedCount = 1 + Math.floor(Math.random() * maxBlocked);
+  const shuffled = cells.slice().sort(() => Math.random() - 0.5);
+  const blocked = shuffled.slice(0, Math.min(blockedCount, maxBlocked));
+
+  // Spawn in worldGroup-LOCAL space: compensate for the scroll offset so the
+  // obstacle always appears exactly spawnDistance ahead of the car in world space.
+  const spawnZ = -CONFIG.spawnDistance - worldGroup.position.z;
+  for (const c of blocked) {
+    spawnObstacle(laneX(c.l), laneY(c.h), spawnZ);
+  }
+}
+
+function spawnObstacle(x, y, z) {
+  const mesh = getFromPool(obstaclePool);
+  if (!mesh) return;
+  const type = OBSTACLE_TYPES[Math.floor(Math.random() * OBSTACLE_TYPES.length)];
+  mesh.userData.active = true;
+  mesh.userData.type = type;
+
+  // Sizes kept within one lane/height cell so obstacles never form view-blocking walls.
+  if (type === 'box') {
+    mesh.scale.set(1.6, 1.6, 1.6);
+    mesh.material = mesh.userData.materials.box;
+  } else if (type === 'barrier') {
+    // wide but flat & short — still one cell, visible over/under
+    mesh.scale.set(CONFIG.laneWidth * 0.85, 0.5, 0.35);
+    mesh.material = mesh.userData.materials.barrier;
+  } else { // floating block
+    mesh.scale.set(1.4, 1.4, 1.4);
+    mesh.material = mesh.userData.materials.float;
+  }
+  mesh.position.set(x, y, z);
+  mesh.visible = true;
+}
+
+function spawnCoins() {
+  const count = CONFIG.coinLineCount[0] +
+    Math.floor(Math.random() * (CONFIG.coinLineCount[1] - CONFIG.coinLineCount[0] + 1));
+  const lane = Math.floor(Math.random() * CONFIG.laneCount);
+  const arc = Math.random() < 0.4; // 40% arcs, 60% straight lines
+  const baseHeight = Math.floor(Math.random() * CONFIG.heightLevels);
+  const spawnZ = -CONFIG.spawnDistance - worldGroup.position.z; // see spawnObstaclePattern note
+
+  for (let i = 0; i < count; i++) {
+    const coin = getFromPool(coinPool);
+    if (!coin) return;
+    coin.userData.active = true;
+    let y = laneY(baseHeight);
+    if (arc) {
+      // parabolic arc across the line
+      const t = i / (count - 1);
+      y += Math.sin(t * Math.PI) * CONFIG.coinArcHeight;
+    }
+    coin.position.set(laneX(lane), y, spawnZ - i * CONFIG.coinSpacing);
+    coin.visible = true;
+  }
+}
+
+/* ================================================================
+   Particles (coin pop)
+   ================================================================ */
+function coinPop(worldPos) {
+  for (let i = 0; i < 8; i++) {
+    const p = getFromPool(particlePool);
+    if (!p) return;
+    p.userData.active = true;
+    p.userData.life = 0.5;
+    p.userData.vel.set((Math.random() - 0.5) * 6, Math.random() * 5 + 2, (Math.random() - 0.5) * 6);
+    // worldPos is in worldGroup space; particles live in scene space
+    p.position.copy(worldGroup.position).add(worldPos);
+    p.visible = true;
+  }
+}
+
+function updateParticles(dt) {
+  for (const p of particlePool) {
+    if (!p.userData.active) continue;
+    p.userData.life -= dt;
+    if (p.userData.life <= 0) { p.userData.active = false; p.visible = false; continue; }
+    p.userData.vel.y -= 12 * dt; // gravity
+    p.position.addScaledVector(p.userData.vel, dt);
+    p.scale.setScalar(Math.max(0.01, p.userData.life * 2));
+  }
+}
+
+/* ================================================================
+   Collision (Box3)
+   ================================================================ */
+const _carBox = new THREE.Box3();
+const _objBox = new THREE.Box3();
+const _objCenter = new THREE.Vector3();
+const _coinSize = new THREE.Vector3(1, 1, 1);
+const _carSize = new THREE.Vector3(1.4, 0.6, 2.4); // slightly forgiving hitbox
+
+// World-space z of an object inside worldGroup
+const worldZ = obj => obj.position.z + worldGroup.position.z;
+
+function checkCollisions() {
+  _carBox.setFromCenterAndSize(car.position, _carSize);
+
+  for (const ob of obstaclePool) {
+    if (!ob.userData.active) continue;
+    // Cheap z-cull (world space) before Box3 test
+    if (Math.abs(worldZ(ob) - car.position.z) > 4) continue;
+    // World-space center (worldGroup only translates along z)
+    _objCenter.set(ob.position.x, ob.position.y, worldZ(ob));
+    _objBox.setFromCenterAndSize(_objCenter, ob.scale); // scale == full size (geometry is 1x1x1)
+    // Shrink obstacle box 15% to be fair
+    _objBox.expandByScalar(-0.15 * Math.min(ob.scale.x, ob.scale.y, ob.scale.z));
+    if (_carBox.intersectsBox(_objBox)) {
+      gameOver();
+      return;
+    }
+  }
+
+  for (const c of coinPool) {
+    if (!c.userData.active) continue;
+    if (Math.abs(worldZ(c) - car.position.z) > 2) continue;
+    _objCenter.set(c.position.x, c.position.y, worldZ(c));
+    _objBox.setFromCenterAndSize(_objCenter, _coinSize);
+    if (_carBox.intersectsBox(_objBox)) {
+      c.userData.active = false;
+      c.visible = false;
+      state.coins++;
+      coinPop(c.position);
+      updateHUD();
+    }
+  }
+}
+
+/* ================================================================
+   Input
+   ================================================================ */
+function onKeyDown(e) {
+  keys[e.code] = true;
+
+  // Difficulty selection (menu only): 1/2/3 or Left/Right arrows
+  if (state.mode === 'MENU') {
+    if (e.code === 'Digit1' || e.code === 'Numpad1') selectDifficulty('easy');
+    if (e.code === 'Digit2' || e.code === 'Numpad2') selectDifficulty('medium');
+    if (e.code === 'Digit3' || e.code === 'Numpad3') selectDifficulty('hard');
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
+      const i = DIFFICULTY_ORDER.indexOf(currentDifficulty);
+      selectDifficulty(DIFFICULTY_ORDER[Math.max(0, i - 1)]);
+    }
+    if (e.code === 'ArrowRight' || e.code === 'KeyD') {
+      const i = DIFFICULTY_ORDER.indexOf(currentDifficulty);
+      selectDifficulty(DIFFICULTY_ORDER[Math.min(DIFFICULTY_ORDER.length - 1, i + 1)]);
+    }
+  }
+
+  // Esc: back to menu from Game Over
+  if (e.code === 'Escape' && state.mode === 'GAME_OVER') showMenu();
+
+  if (e.code === 'Space' || e.code === 'Enter') {
+    if (state.mode !== 'PLAYING') startGame();
+    e.preventDefault();
+  }
+}
+
+function onPointerDown(e) {
+  // Tap/click to start or restart (touch swipes are handled on touchend;
+  // clicks on overlay buttons are handled by their own listeners)
+  if (state.mode !== 'PLAYING' && e.pointerType !== 'touch') startGame();
+}
+
+function onTouchStart(e) {
+  // Ignore touches that begin on overlay buttons (difficulty / menu)
+  if (e.target.closest && e.target.closest('button')) { swipeStart = null; return; }
+  if (e.touches.length) swipeStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+}
+
+function onTouchEnd(e) {
+  if (!swipeStart) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - swipeStart.x;
+  const dy = t.clientY - swipeStart.y;
+  swipeStart = null;
+
+  if (state.mode !== 'PLAYING') { startGame(); return; }
+
+  const THRESH = 30;
+  if (Math.abs(dx) < THRESH && Math.abs(dy) < THRESH) return; // tap, not swipe
+  if (Math.abs(dx) > Math.abs(dy)) {
+    if (dx > 0) moveLane(1); else moveLane(-1);
+  } else {
+    if (dy < 0) moveHeight(1); else moveHeight(-1);
+  }
+}
+
+function moveLane(dir) {
+  const n = Math.max(0, Math.min(CONFIG.laneCount - 1, state.lane + dir));
+  state.lane = n;
+}
+
+function moveHeight(dir) {
+  const n = Math.max(0, Math.min(CONFIG.heightLevels - 1, state.height + dir));
+  state.height = n;
+}
+
+/* ================================================================
+   Game states
+   ================================================================ */
+const overlay = document.getElementById('overlay');
+const ovTitle = document.getElementById('ovTitle');
+const ovMsg = document.getElementById('ovMsg');
+const ovStats = document.getElementById('ovStats');
+const diffRow = document.getElementById('diffRow');
+const bestLine = document.getElementById('bestLine');
+const newBestEl = document.getElementById('newBest');
+const menuBtn = document.getElementById('menuBtn');
+const startLine = document.getElementById('startLine');
+const hint = document.getElementById('hint');
+const hudCoins = document.getElementById('hudCoins');
+const hudScore = document.getElementById('hudScore');
+const hudDist = document.getElementById('hudDist');
+const hudSpeed = document.getElementById('hudSpeed');
+
+function computeScore() {
+  return Math.round((state.distance + state.coins * 10) * CONFIG.scoreMultiplier);
+}
+
+function updateHUD() {
+  state.score = computeScore();
+  hudCoins.textContent = state.coins;
+  hudScore.textContent = state.score;
+  hudDist.textContent = Math.floor(state.distance);
+  hudSpeed.textContent =
+    (state.mode === 'PLAYING' ? Math.round(state.speed * 3.6) : 0) + ' km/h';
+}
+
+/* Highlight the selected difficulty button + show its best score */
+function refreshMenuUI() {
+  for (const btn of diffRow.querySelectorAll('.diffBtn')) {
+    btn.classList.toggle('selected', btn.dataset.diff === currentDifficulty);
+  }
+  bestLine.textContent = 'Best (' + currentDifficulty + '): ' + getBestScore(currentDifficulty);
+}
+
+function selectDifficulty(diff) {
+  if (!DIFFICULTY_PRESETS[diff]) return;
+  applyDifficulty(diff);
+  refreshMenuUI();
+}
+
+/* Difficulty buttons (click/tap). stopPropagation so the overlay's
+   pointerdown doesn't also start the game. */
+for (const btn of diffRow.querySelectorAll('.diffBtn')) {
+  btn.addEventListener('pointerdown', e => e.stopPropagation());
+  btn.addEventListener('click', e => { e.stopPropagation(); selectDifficulty(btn.dataset.diff); });
+}
+menuBtn.addEventListener('pointerdown', e => e.stopPropagation());
+menuBtn.addEventListener('click', e => { e.stopPropagation(); showMenu(); });
+
+function startGame() {
+  resetGame();
+  state.mode = 'PLAYING';
+  overlay.classList.add('hidden');
+}
+
+function showMenu() {
+  state.mode = 'MENU';
+  ovTitle.textContent = 'NEON RUNNER';
+  ovMsg.innerHTML = 'Arrow keys / WASD or swipe to move.<br>Dodge obstacles, collect coins.';
+  diffRow.style.display = 'flex';
+  bestLine.style.display = 'block';
+  ovStats.style.display = 'none';
+  newBestEl.style.display = 'none';
+  menuBtn.style.display = 'none';
+  startLine.style.display = 'block';
+  hint.style.display = 'block';
+  refreshMenuUI();
+  overlay.classList.remove('hidden');
+  resetGame(); // clear the field so the menu shows a clean road
+}
+
+function gameOver() {
+  state.mode = 'GAME_OVER';
+  state.isNewBest = false;
+
+  // Best score per difficulty
+  const finalScore = computeScore();
+  const best = getBestScore(currentDifficulty);
+  if (finalScore > best) {
+    setBestScore(currentDifficulty, finalScore);
+    state.isNewBest = true;
+  }
+
+  ovTitle.textContent = 'CRASHED';
+  ovMsg.innerHTML = 'Press <b>Space</b> / <b>Enter</b> or tap to restart with <b>' + currentDifficulty.toUpperCase() + '</b>';
+  diffRow.style.display = 'none';
+  bestLine.style.display = 'none';
+  ovStats.style.display = 'block';
+  ovStats.innerHTML =
+    'Score: <b>' + finalScore + '</b> &nbsp;·&nbsp; Best (' + currentDifficulty + '): <b>' +
+    Math.max(best, finalScore) + '</b><br>Coins: ' + state.coins +
+    ' &nbsp;·&nbsp; Distance: ' + Math.floor(state.distance) + ' m';
+  newBestEl.style.display = state.isNewBest ? 'block' : 'none';
+  menuBtn.style.display = 'inline-block';
+  // Game Over shows only the restart text + Menu button — hide menu-only lines
+  startLine.style.display = 'none';
+  hint.style.display = 'none';
+  overlay.classList.remove('hidden');
+}
+
+function resetGame() {
+  // Apply the selected preset fresh at the start of every run — no value leaks
+  // between difficulties even if CONFIG was mutated by a previous run.
+  applyDifficulty(currentDifficulty);
+
+  state.speed = CONFIG.baseSpeed;
+  state.distance = 0;
+  state.coins = 0;
+  state.score = 0;
+  state.isNewBest = false;
+  state.lane = 1;
+  state.height = 0;
+  state.spawnTimer = 0;
+
+  // Deactivate all pooled objects
+  for (const o of obstaclePool) { o.userData.active = false; o.visible = false; }
+  for (const c of coinPool) { c.userData.active = false; c.visible = false; }
+  for (const p of particlePool) { p.userData.active = false; p.visible = false; }
+  for (const t of trailPool) { t.userData.active = false; t.visible = false; }
+  for (const a of archPool) { a.userData.active = false; a.visible = false; }
+
+  // Reset road segments and ground grids to their original positions
+  for (let i = 0; i < roadSegments.length; i++) {
+    roadSegments[i].position.z = -i * CONFIG.roadLength;
+  }
+  for (let i = 0; i < groundSegments.length; i++) {
+    groundSegments[i].position.z = -i * CONFIG.roadLength;
+  }
+  worldGroup.position.z = 0;
+
+  // Reset city layer group offsets (buildings are children of worldGroup,
+  // which has just been zeroed, so their stored z values are correct again)
+  if (cityNear) cityNear.position.z = 0;
+  if (cityFar) cityFar.position.z = 0;
+
+  // Reset FOV speed boost
+  camera.fov = CONFIG.fov;
+  camera.updateProjectionMatrix();
+
+  car.position.set(laneX(state.lane), laneY(state.height), 0);
+  car.rotation.set(0, 0, 0);
+  updateHUD();
+}
+
+/* ================================================================
+   Main update
+   ================================================================ */
+function update(dt) {
+  // If an init step failed, its objects may be missing — skip them gracefully
+  if (!car) return;
+
+  // Coins spin even in menu (nice idle look)
+  for (const c of coinPool) if (c.userData.active) c.rotation.y += CONFIG.coinSpin * dt;
+  updateParticles(dt);
+  updateTrail(dt);
+  updateSpeedLines(dt);
+  updateArches(dt);
+  // Animated lane markers: gentle brightness pulse
+  const pulse = 0.55 + 0.45 * Math.sin(performance.now() * 0.001 * CONFIG.stripePulseSpeed);
+  for (const m of stripeMats) m.opacity = pulse;
+
+  // Engine glow trail (always emitting while playing)
+  if (state.mode === 'PLAYING') emitTrail(dt);
+
+  if (state.mode !== 'PLAYING') {
+    if (state.mode === 'MENU') {
+      // Showcase mode: car hovers and slowly rotates in place; camera sits at
+      // a 3/4 angle for a good screenshot view.
+      car.position.y = laneY(state.height) + Math.sin(performance.now() * 0.002) * 0.15;
+      car.rotation.y += CONFIG.showcaseSpin * dt;
+      const ang = CONFIG.showcaseAngle;
+      const camX = car.position.x + Math.sin(ang) * CONFIG.showcaseDist;
+      const camY = car.position.y + CONFIG.showcaseHeight;
+      const camZ = car.position.z + Math.cos(ang) * CONFIG.showcaseDist;
+      const k = Math.min(1, CONFIG.showcaseCamLerp * dt);
+      camera.position.x += (camX - camera.position.x) * k;
+      camera.position.y += (camY - camera.position.y) * k;
+      camera.position.z += (camZ - camera.position.z) * k;
+      camera.lookAt(car.position.x, car.position.y + 0.2, car.position.z);
+    }
+    return;
+  }
+
+  if (cityNear) updateCity(cityNear, dt);
+  if (cityFar) updateCity(cityFar, dt);
+
+  // --- speed & distance ---
+  state.speed = Math.min(CONFIG.maxSpeed, state.speed + CONFIG.speedIncreasePerSecond * dt);
+  state.distance += state.speed * dt;
+  updateHUD();
+
+  // --- keyboard held movement (per-press feel: respond to fresh presses) ---
+  if (keys['ArrowLeft'] || keys['KeyA']) { moveLane(-1); keys['ArrowLeft'] = keys['KeyA'] = false; }
+  if (keys['ArrowRight'] || keys['KeyD']) { moveLane(1); keys['ArrowRight'] = keys['KeyD'] = false; }
+  if (keys['ArrowUp'] || keys['KeyW']) { moveHeight(1); keys['ArrowUp'] = keys['KeyW'] = false; }
+  if (keys['ArrowDown'] || keys['KeyS']) { moveHeight(-1); keys['ArrowDown'] = keys['KeyS'] = false; }
+
+  // --- smooth car movement (lerp toward target lane/height) ---
+  const targetX = laneX(state.lane);
+  const targetY = laneY(state.height);
+  const prevX = car.position.x;
+  car.position.x += (targetX - car.position.x) * Math.min(1, CONFIG.laneLerp * dt);
+  car.position.y += (targetY - car.position.y) * Math.min(1, CONFIG.heightLerp * dt);
+
+  // Roll based on horizontal velocity (proxy: distance to target)
+  const dx = targetX - car.position.x;
+  const targetRoll = -THREE.MathUtils.clamp(dx / CONFIG.laneWidth, -1, 1) * CONFIG.maxRoll;
+  car.rotation.z += (targetRoll - car.rotation.z) * Math.min(1, CONFIG.rollLerp * dt);
+  // Slight pitch when climbing/diving
+  const dy = targetY - car.position.y;
+  car.rotation.x += ((dy / CONFIG.heightStep) * 0.2 - car.rotation.x) * Math.min(1, CONFIG.rollLerp * dt);
+
+  // --- move world toward camera ---
+  const dz = state.speed * dt;
+  worldGroup.position.z += dz;
+
+  // Recycle road segments: when a segment is fully behind the camera, move it forward
+  for (const seg of roadSegments) {
+    // segment world z = worldGroup.z + seg.z; camera is at z ~ cameraBack
+    if (worldGroup.position.z + seg.position.z > CONFIG.roadLength) {
+      seg.position.z -= CONFIG.roadLength * CONFIG.segmentCount;
+    }
+  }
+  // Ground grids recycle the same way (their own pool, own depth count)
+  for (const grp of groundSegments) {
+    if (worldGroup.position.z + grp.position.z > CONFIG.roadLength) {
+      grp.position.z -= CONFIG.roadLength * groundSegments.length;
+    }
+  }
+
+  // Recycle obstacles/coins: deactivate when past camera, or reuse when far behind
+  const behindZ = 12;
+  for (const ob of obstaclePool) {
+    if (!ob.userData.active) continue;
+    if (worldGroup.position.z + ob.position.z > behindZ) { ob.userData.active = false; ob.visible = false; }
+  }
+  for (const c of coinPool) {
+    if (!c.userData.active) continue;
+    if (worldGroup.position.z + c.position.z > behindZ) { c.userData.active = false; c.visible = false; }
+  }
+
+  // --- spawning ---
+  // Purely time-based interval: spacing between rows scales with speed,
+  // so the player always gets the same reaction gap regardless of speed.
+  state.spawnTimer -= dt;
+  if (state.spawnTimer <= 0) {
+    state.spawnTimer = CONFIG.minSecondsBetweenObstacleRows;
+    spawnObstaclePattern();
+    if (Math.random() < CONFIG.coinSpawnChance) spawnCoins();
+  }
+
+  // --- camera follow ---
+  const camTargetX = car.position.x * 0.6; // camera lags horizontally for feel
+  camera.position.x += (camTargetX - camera.position.x) * Math.min(1, CONFIG.cameraLerp * dt);
+  camera.position.y += ((car.position.y + CONFIG.cameraUp) - camera.position.y) * Math.min(1, CONFIG.cameraLerp * dt);
+  camera.position.z += (CONFIG.cameraBack - camera.position.z) * Math.min(1, CONFIG.cameraLerp * dt); // return from showcase
+  // Look well ahead of the car so distant obstacles are visible
+  camera.lookAt(car.position.x * 0.8, car.position.y + 0.5, -CONFIG.cameraLookAhead);
+
+  // --- speed feel: FOV widens as speed rises ---
+  const speedT = THREE.MathUtils.clamp(
+    (state.speed - CONFIG.baseSpeed) / Math.max(1, CONFIG.maxSpeed - CONFIG.baseSpeed), 0, 1);
+  const targetFov = CONFIG.fov + speedT * CONFIG.fovSpeedBoost;
+  if (Math.abs(camera.fov - targetFov) > 0.01) {
+    camera.fov += (targetFov - camera.fov) * Math.min(1, 3 * dt);
+    camera.updateProjectionMatrix();
+  }
+
+  // --- collisions ---
+  checkCollisions();
+}
+
+/* ================================================================
+   Resize
+   ================================================================ */
+function onResize() {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(devicePixelRatio, CONFIG.pixelRatioCap));
+  renderer.setSize(innerWidth, innerHeight);
+}
+
+/* ================================================================
+   Loop
+   ================================================================ */
+initScene();
+showMenu(); // resets the field and applies the restored difficulty
+
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05); // clamp big dt (tab switch)
+  update(dt);
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
